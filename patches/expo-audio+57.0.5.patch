@@ -1,0 +1,756 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index c76a9fd..2101a67 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -24,6 +24,7 @@ import java.lang.ref.WeakReference
+ 
+ private const val PLAYBACK_STATUS_UPDATE = "playbackStatusUpdate"
+ private const val AUDIO_SAMPLE_UPDATE = "audioSampleUpdate"
++private const val REMOTE_COMMAND = "remoteCommand"
+ private const val SEEK_JUMP_INTERVAL_MS: Long = 10_000
+ 
+ @UnstableApi
+@@ -34,7 +35,8 @@ class AudioPlayer(
+   updateInterval: Double,
+   bufferDurationMs: Long = 0
+ ) : BaseAudioPlayer(
+-  player = ExoPlayer.Builder(context)
++  // Quartz patch: QuartzFx adds the combinable sound effects to the audio sink.
++  player = ExoPlayer.Builder(context, QuartzFx.renderersFactory(context))
+     .setLooper(context.mainLooper)
+     .setAudioAttributes(AudioAttributes.DEFAULT, false)
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+@@ -97,6 +99,11 @@ class AudioPlayer(
+     startUpdating()
+   }
+ 
++  /** Quartz patch: track navigation requested from the notification, headset or lock screen. */
++  fun emitRemoteCommand(command: String) {
++    emit(REMOTE_COMMAND, mapOf("command" to command))
++  }
++
+   fun setActiveForLockScreen(active: Boolean, metadata: Metadata? = null, options: AudioLockScreenOptions? = null) {
+     if (active) {
+       this.metadata = metadata
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
+index 86880d9..c8b183e 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
+@@ -55,7 +55,9 @@ class Metadata(
+   @Field val title: String?,
+   @Field val artist: String?,
+   @Field val albumTitle: String?,
+-  @Field val artworkUrl: URL?
++  @Field val artworkUrl: URL?,
++  // Quartz patch: shows a heart button in the notification; null hides it.
++  @Field val isFavorite: Boolean? = null
+ ) : Record
+ 
+ enum class AndroidOutputFormat(val value: String) : Enumerable {
+@@ -110,7 +112,10 @@ enum class AndroidAudioEncoder(val value: String) : Enumerable {
+ class AudioLockScreenOptions(
+   @Field val showSeekForward: Boolean,
+   @Field val showSeekBackward: Boolean,
+-  @Field val isLiveStream: Boolean? = null
++  @Field val isLiveStream: Boolean? = null,
++  // Quartz patch: previous/next track buttons, delegated to JS via "remoteCommand".
++  @Field val showSkipPrevious: Boolean = false,
++  @Field val showSkipNext: Boolean = false
+ ) : Record
+ 
+ enum class InterruptionMode(val value: String) : Enumerable {
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt
+new file mode 100644
+index 0000000..9f4454e
+--- /dev/null
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt
+@@ -0,0 +1,411 @@
++package expo.modules.audio
++
++import android.content.Context
++import androidx.media3.common.C
++import androidx.media3.common.audio.AudioProcessor
++import androidx.media3.common.audio.BaseAudioProcessor
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.exoplayer.DefaultRenderersFactory
++import androidx.media3.exoplayer.audio.AudioSink
++import androidx.media3.exoplayer.audio.DefaultAudioSink
++import java.nio.ByteBuffer
++import java.nio.ByteOrder
++import kotlin.math.PI
++import kotlin.math.abs
++import kotlin.math.cos
++import kotlin.math.max
++import kotlin.math.min
++import kotlin.math.pow
++import kotlin.math.sin
++import kotlin.math.sqrt
++import kotlin.math.tanh
++
++/**
++ * Quartz patch: combinable sound effects (reverb, echo, 8D, bass boost, lo-fi /
++ * radio filters, karaoke) running inside ExoPlayer's audio pipeline, before
++ * speed/pitch. Settings are pushed from the AudioDsp module through
++ * [QuartzFx.configure] and read on every buffer; each effect fades in and out
++ * so toggling never clicks.
++ */
++@UnstableApi
++object QuartzFx {
++  /** 0–1 wet amounts / flags, written from the JS thread. */
++  @Volatile var reverb = 0f
++  @Volatile var roomSize = 0.82f
++  @Volatile var echo = 0f
++  @Volatile var eightD = 0f
++  @Volatile var bass = 0f
++  /** 0 none, 1 lo-fi, 2 radio. */
++  @Volatile var filter = 0
++  @Volatile var karaoke = 0f
++
++  /** [reverb, roomSize, echo, eightD, bass, filter, karaoke] */
++  @JvmStatic
++  fun configure(values: FloatArray) {
++    reverb = values.getOrElse(0) { 0f }.coerceIn(0f, 1f)
++    roomSize = values.getOrElse(1) { 0.82f }.coerceIn(0.5f, 0.97f)
++    echo = values.getOrElse(2) { 0f }.coerceIn(0f, 1f)
++    eightD = values.getOrElse(3) { 0f }.coerceIn(0f, 1f)
++    bass = values.getOrElse(4) { 0f }.coerceIn(0f, 1f)
++    filter = values.getOrElse(5) { 0f }.toInt()
++    karaoke = values.getOrElse(6) { 0f }.coerceIn(0f, 1f)
++  }
++
++  fun renderersFactory(context: Context) = object : DefaultRenderersFactory(context) {
++    override fun buildAudioSink(
++      context: Context,
++      enableFloatOutput: Boolean,
++      enableAudioTrackPlaybackParams: Boolean,
++    ): AudioSink =
++      DefaultAudioSink.Builder(context)
++        .setEnableFloatOutput(enableFloatOutput)
++        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
++        .setAudioProcessors(arrayOf<AudioProcessor>(QuartzFxProcessor()))
++        .build()
++  }
++}
++
++/** RBJ biquad, transposed direct form II. */
++private class Biquad {
++  private var b0 = 1f
++  private var b1 = 0f
++  private var b2 = 0f
++  private var a1 = 0f
++  private var a2 = 0f
++  private var z1 = 0f
++  private var z2 = 0f
++
++  fun lowpass(sr: Int, f: Double, q: Double = 0.707) = rbj(sr, f, q) { cw, alpha ->
++    doubleArrayOf((1 - cw) / 2, 1 - cw, (1 - cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
++  }
++
++  fun highpass(sr: Int, f: Double, q: Double = 0.707) = rbj(sr, f, q) { cw, alpha ->
++    doubleArrayOf((1 + cw) / 2, -(1 + cw), (1 + cw) / 2, 1 + alpha, -2 * cw, 1 - alpha)
++  }
++
++  fun lowShelf(sr: Int, f: Double, db: Double) {
++    val a = 10.0.pow(db / 40)
++    val w = 2 * PI * f / sr
++    val cw = cos(w)
++    val alpha = sin(w) / 2 * sqrt(2.0)
++    val sa = 2 * sqrt(a) * alpha
++    set(
++      doubleArrayOf(
++        a * ((a + 1) - (a - 1) * cw + sa),
++        2 * a * ((a - 1) - (a + 1) * cw),
++        a * ((a + 1) - (a - 1) * cw - sa),
++        (a + 1) + (a - 1) * cw + sa,
++        -2 * ((a - 1) + (a + 1) * cw),
++        (a + 1) + (a - 1) * cw - sa,
++      ),
++    )
++  }
++
++  private inline fun rbj(sr: Int, f: Double, q: Double, c: (Double, Double) -> DoubleArray) {
++    val w = 2 * PI * min(f, sr * 0.45) / sr
++    set(c(cos(w), sin(w) / (2 * q)))
++  }
++
++  private fun set(c: DoubleArray) {
++    b0 = (c[0] / c[3]).toFloat()
++    b1 = (c[1] / c[3]).toFloat()
++    b2 = (c[2] / c[3]).toFloat()
++    a1 = (c[4] / c[3]).toFloat()
++    a2 = (c[5] / c[3]).toFloat()
++  }
++
++  fun clear() {
++    z1 = 0f
++    z2 = 0f
++  }
++
++  fun run(x: Float): Float {
++    val y = b0 * x + z1
++    z1 = b1 * x - a1 * y + z2
++    z2 = b2 * x - a2 * y
++    return y
++  }
++}
++
++/** Freeverb comb with one-pole damping. */
++private class Comb(size: Int) {
++  private val buf = FloatArray(size)
++  private var i = 0
++  private var store = 0f
++
++  fun clear() {
++    buf.fill(0f)
++    store = 0f
++  }
++
++  fun run(x: Float, feedback: Float, damp: Float): Float {
++    val y = buf[i]
++    store = y * (1 - damp) + store * damp
++    buf[i] = x + store * feedback
++    if (++i >= buf.size) i = 0
++    return y
++  }
++}
++
++private class Allpass(size: Int) {
++  private val buf = FloatArray(size)
++  private var i = 0
++
++  fun clear() = buf.fill(0f)
++
++  fun run(x: Float): Float {
++    val b = buf[i]
++    buf[i] = x + b * 0.5f
++    if (++i >= buf.size) i = 0
++    return b - x
++  }
++}
++
++/** Stereo Freeverb (Jezar's tunings, scaled to the sample rate). */
++private class Reverb(sr: Int) {
++  private val scale = sr / 44100.0
++  private fun n(len: Int) = max(1, (len * scale).toInt())
++  private val combL = intArrayOf(1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617).map { Comb(n(it)) }
++  private val combR = intArrayOf(1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617).map { Comb(n(it + 23)) }
++  private val apL = intArrayOf(556, 441, 341, 225).map { Allpass(n(it)) }
++  private val apR = intArrayOf(556, 441, 341, 225).map { Allpass(n(it + 23)) }
++  private val pre = Biquad().apply { highpass(sr, 180.0) }
++
++  fun clear() {
++    combL.forEach { it.clear() }
++    combR.forEach { it.clear() }
++    apL.forEach { it.clear() }
++    apR.forEach { it.clear() }
++    pre.clear()
++  }
++
++  /** Writes the wet signal into out[0..1]. */
++  fun run(l: Float, r: Float, room: Float, out: FloatArray) {
++    val x = pre.run((l + r) * 0.015f)
++    var ol = 0f
++    var orr = 0f
++    for (c in combL) ol += c.run(x, room, 0.3f)
++    for (c in combR) orr += c.run(x, room, 0.3f)
++    for (a in apL) ol = a.run(ol)
++    for (a in apR) orr = a.run(orr)
++    out[0] = ol
++    out[1] = orr
++  }
++}
++
++/** Ping-pong echo, ~330 ms, with a darkening feedback path. */
++private class Echo(sr: Int) {
++  private val len = max(1, (sr * 0.33).toInt())
++  private val bufL = FloatArray(len)
++  private val bufR = FloatArray(len)
++  private var i = 0
++  private val toneL = Biquad().apply { lowpass(sr, 3500.0) }
++  private val toneR = Biquad().apply { lowpass(sr, 3500.0) }
++
++  fun clear() {
++    bufL.fill(0f)
++    bufR.fill(0f)
++    toneL.clear()
++    toneR.clear()
++  }
++
++  fun run(l: Float, r: Float, out: FloatArray) {
++    val dl = bufL[i]
++    val dr = bufR[i]
++    bufL[i] = toneL.run((l + r) * 0.5f + dr * 0.42f)
++    bufR[i] = toneR.run(dl * 0.42f)
++    if (++i >= len) i = 0
++    out[0] = dl
++    out[1] = dr
++  }
++}
++
++@UnstableApi
++private class QuartzFxProcessor : BaseAudioProcessor() {
++  private var sr = 44100
++  private var channels = 2
++  private var float = false
++
++  private var reverb: Reverb? = null
++  private var echo: Echo? = null
++  private val bassL = Biquad()
++  private val bassR = Biquad()
++  private val lpL = Biquad()
++  private val lpR = Biquad()
++  private val hpL = Biquad()
++  private val hpR = Biquad()
++  private val karaokeLow = Biquad()
++  private var filterMode = 0
++
++  // Smoothed wet amounts.
++  private var mReverb = 0f
++  private var mEcho = 0f
++  private var m8d = 0f
++  private var mBass = 0f
++  private var mFilter = 0f
++  private var mKaraoke = 0f
++
++  private var phase = 0.0
++  private var noise = 22222
++  private val tmp = FloatArray(2)
++
++  override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
++    val enc = inputAudioFormat.encoding
++    if (enc != C.ENCODING_PCM_16BIT && enc != C.ENCODING_PCM_FLOAT) {
++      throw AudioProcessor.UnhandledAudioFormatException(inputAudioFormat)
++    }
++    if (inputAudioFormat.channelCount !in 1..2) return AudioProcessor.AudioFormat.NOT_SET
++    return inputAudioFormat
++  }
++
++  override fun onFlush(streamMetadata: AudioProcessor.StreamMetadata) {
++    val fmt = inputAudioFormat
++    if (fmt.sampleRate <= 0) return
++    if (fmt.sampleRate != sr || reverb == null) {
++      sr = fmt.sampleRate
++      reverb = Reverb(sr)
++      echo = Echo(sr)
++      bassL.lowShelf(sr, 110.0, 9.0)
++      bassR.lowShelf(sr, 110.0, 9.0)
++      karaokeLow.lowpass(sr, 160.0)
++      filterMode = -1
++    }
++    channels = fmt.channelCount
++    float = fmt.encoding == C.ENCODING_PCM_FLOAT
++    reverb?.clear()
++    echo?.clear()
++    listOf(bassL, bassR, lpL, lpR, hpL, hpR, karaokeLow).forEach { it.clear() }
++  }
++
++  override fun onReset() {
++    reverb = null
++    echo = null
++  }
++
++  private fun setFilter(mode: Int) {
++    if (mode == filterMode) return
++    filterMode = mode
++    when (mode) {
++      1 -> { // lo-fi: dull top, thin bottom
++        lpL.lowpass(sr, 3200.0); lpR.lowpass(sr, 3200.0)
++        hpL.highpass(sr, 90.0); hpR.highpass(sr, 90.0)
++      }
++      2 -> { // radio / phone: narrow band
++        lpL.lowpass(sr, 3000.0, 1.0); lpR.lowpass(sr, 3000.0, 1.0)
++        hpL.highpass(sr, 450.0, 1.0); hpR.highpass(sr, 450.0, 1.0)
++      }
++    }
++  }
++
++  private fun soft(x: Float): Float {
++    val a = abs(x)
++    if (a < 0.85f) return x
++    val y = 0.85f + 0.15f * tanh((a - 0.85f) / 0.15f)
++    return if (x < 0) -y else y
++  }
++
++  override fun queueInput(inputBuffer: ByteBuffer) {
++    val remaining = inputBuffer.remaining()
++    if (remaining == 0) return
++    val src = inputBuffer.order(ByteOrder.nativeOrder())
++    val out = replaceOutputBuffer(remaining)
++
++    val tReverb = QuartzFx.reverb
++    val room = QuartzFx.roomSize
++    val tEcho = QuartzFx.echo
++    val t8d = QuartzFx.eightD
++    val tBass = QuartzFx.bass
++    val wantFilter = QuartzFx.filter
++    val tKaraoke = QuartzFx.karaoke
++    // Keep the old filter running while it fades out, then switch.
++    if (wantFilter != 0 && (filterMode <= 0 || mFilter < 0.002f)) setFilter(wantFilter)
++    val tFilter = if (wantFilter != 0 && wantFilter == filterMode) 1f else 0f
++
++    val k = 1f - Math.exp(-1.0 / (0.04 * sr)).toFloat() // ~40 ms glide
++    val step = 2 * PI * 0.11 / sr // 8D: one turn every ~9 s
++    val rev = reverb
++    val ech = echo
++    val bytes = if (float) 4 else 2
++    val frames = remaining / (bytes * channels)
++
++    for (f in 0 until frames) {
++      var l = if (float) src.getFloat() else src.getShort() / 32768f
++      var r = if (channels == 2) (if (float) src.getFloat() else src.getShort() / 32768f) else l
++
++      mReverb += (tReverb - mReverb) * k
++      mEcho += (tEcho - mEcho) * k
++      m8d += (t8d - m8d) * k
++      mBass += (tBass - mBass) * k
++      mFilter += (tFilter - mFilter) * k
++      mKaraoke += (tKaraoke - mKaraoke) * k
++
++      if (mKaraoke > 0.001f) {
++        // Centre-panned vocals cancel; the bass (also centred) is kept.
++        val low = karaokeLow.run((l + r) * 0.5f)
++        val side = (l - r) * 0.5f
++        l += (side + low - l) * mKaraoke
++        r += (-side + low - r) * mKaraoke
++      }
++      if (mBass > 0.001f) {
++        l += (bassL.run(l) * 0.8f - l) * mBass
++        r += (bassR.run(r) * 0.8f - r) * mBass
++      }
++      if (mFilter > 0.001f && filterMode > 0) {
++        var fl = hpL.run(lpL.run(l))
++        var fr = hpR.run(lpR.run(r))
++        if (filterMode == 1) {
++          fl = tanh(fl * 1.6f) * 0.7f
++          fr = tanh(fr * 1.6f) * 0.7f
++          // Vinyl crackle: sparse, quiet clicks.
++          noise = noise * 1103515245 + 12345
++          if (((noise ushr 16) and 0x7FF) == 0) {
++            val c = ((noise ushr 8) and 0xFF) / 255f * 0.06f
++            fl += c
++            fr += c
++          }
++        } else {
++          fl = tanh(fl * 2.2f) * 0.6f
++          fr = tanh(fr * 2.2f) * 0.6f
++        }
++        l += (fl - l) * mFilter
++        r += (fr - r) * mFilter
++      }
++      if (mEcho > 0.001f && ech != null) {
++        ech.run(l, r, tmp)
++        l += tmp[0] * 0.55f * mEcho
++        r += tmp[1] * 0.55f * mEcho
++      }
++      if (mReverb > 0.001f && rev != null) {
++        rev.run(l, r, room, tmp)
++        val wet = mReverb * 1.1f
++        l = l * (1 - mReverb * 0.25f) + tmp[0] * wet
++        r = r * (1 - mReverb * 0.25f) + tmp[1] * wet
++      }
++      if (m8d > 0.001f) {
++        phase += step
++        if (phase > 2 * PI) phase -= 2 * PI
++        val m = (l + r) * 0.5f
++        val angle = (sin(phase) + 1) * PI / 4
++        val pl = (m * cos(angle) * 1.25).toFloat()
++        val pr = (m * sin(angle) * 1.25).toFloat()
++        l += (pl - l) * m8d
++        r += (pr - r) * m8d
++      }
++
++      l = soft(l)
++      r = soft(r)
++      if (channels == 1) {
++        val m = (l + r) * 0.5f
++        if (float) out.putFloat(m) else out.putShort((m * 32767f).toInt().coerceIn(-32768, 32767).toShort())
++      } else if (float) {
++        out.putFloat(l)
++        out.putFloat(r)
++      } else {
++        out.putShort((l * 32767f).toInt().coerceIn(-32768, 32767).toShort())
++        out.putShort((r * 32767f).toInt().coerceIn(-32768, 32767).toShort())
++      }
++    }
++    inputBuffer.position(inputBuffer.limit())
++    out.flip()
++  }
++}
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 196a5d5..db34ced 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -90,6 +90,8 @@ class AudioControlsService : MediaSessionService() {
+ 
+         ACTION_SEEK_FORWARD -> currentPlayerRef.seekTo(currentPlayerRef.currentPosition + SEEK_INTERVAL_MS)
+         ACTION_SEEK_BACKWARD -> currentPlayerRef.seekTo(currentPlayerRef.currentPosition - SEEK_INTERVAL_MS)
++        ACTION_SKIP_PREVIOUS -> currentPlayer?.emitRemoteCommand("previous")
++        ACTION_SKIP_NEXT -> currentPlayer?.emitRemoteCommand("next")
+       }
+     }
+ 
+@@ -192,7 +194,17 @@ class AudioControlsService : MediaSessionService() {
+       val compactViewIndices = mutableListOf<Int>()
+       var currentIndex = 0
+ 
+-      if (currentOptions?.showSeekBackward == true) {
++      if (currentOptions?.showSkipPrevious == true) {
++        builder.addAction(
++          NotificationCompat.Action(
++            androidx.media3.session.R.drawable.media3_icon_previous,
++            "Previous",
++            buildActionPendingIntent(ACTION_SKIP_PREVIOUS)
++          )
++        )
++        compactViewIndices.add(currentIndex)
++        currentIndex++
++      } else if (currentOptions?.showSeekBackward == true) {
+         builder.addAction(
+           NotificationCompat.Action(
+             androidx.media3.session.R.drawable.media3_icon_skip_back,
+@@ -218,7 +230,16 @@ class AudioControlsService : MediaSessionService() {
+       compactViewIndices.add(currentIndex)
+       currentIndex++
+ 
+-      if (currentOptions?.showSeekForward == true) {
++      if (currentOptions?.showSkipNext == true) {
++        builder.addAction(
++          NotificationCompat.Action(
++            androidx.media3.session.R.drawable.media3_icon_next,
++            "Next",
++            buildActionPendingIntent(ACTION_SKIP_NEXT)
++          )
++        )
++        compactViewIndices.add(currentIndex)
++      } else if (currentOptions?.showSeekForward == true) {
+         builder.addAction(
+           NotificationCompat.Action(
+             androidx.media3.session.R.drawable.media3_icon_skip_forward,
+@@ -240,8 +261,22 @@ class AudioControlsService : MediaSessionService() {
+     val session = mediaSession ?: return
+     val mediaButtons = mutableListOf<CommandButton>()
+ 
++    // Quartz patch: previous track takes the back slot; seek buttons move to the overflow.
++    val skipPrevious = currentOptions?.showSkipPrevious == true
++    val skipNext = currentOptions?.showSkipNext == true
++    if (skipPrevious) {
++      mediaButtons.add(
++        CommandButton.Builder(CommandButton.ICON_PREVIOUS)
++          .setDisplayName("Previous")
++          .setEnabled(true)
++          .setPlayerCommand(Player.COMMAND_SEEK_TO_PREVIOUS)
++          .setSlots(CommandButton.SLOT_BACK)
++          .build()
++      )
++    }
++
+     // Add seek backward button if enabled
+-    if (currentOptions?.showSeekBackward == true) {
++    if (currentOptions?.showSeekBackward == true && !skipPrevious) {
+       mediaButtons.add(
+         CommandButton.Builder(CommandButton.ICON_SKIP_BACK_10)
+           .setDisplayName("Seek Backward")
+@@ -262,8 +297,19 @@ class AudioControlsService : MediaSessionService() {
+         .build()
+     )
+ 
++    if (skipNext) {
++      mediaButtons.add(
++        CommandButton.Builder(CommandButton.ICON_NEXT)
++          .setDisplayName("Next")
++          .setEnabled(true)
++          .setPlayerCommand(Player.COMMAND_SEEK_TO_NEXT)
++          .setSlots(CommandButton.SLOT_FORWARD)
++          .build()
++      )
++    }
++
+     // Add seek forward button if enabled
+-    if (currentOptions?.showSeekForward == true) {
++    if (currentOptions?.showSeekForward == true && !skipNext) {
+       mediaButtons.add(
+         CommandButton.Builder(CommandButton.ICON_SKIP_FORWARD_10)
+           .setDisplayName("Seek Forward")
+@@ -274,6 +320,18 @@ class AudioControlsService : MediaSessionService() {
+       )
+     }
+ 
++    // Quartz patch: heart button, shown once JS reports whether the track is a favourite.
++    currentMetadata?.isFavorite?.let { favorite ->
++      mediaButtons.add(
++        CommandButton.Builder(if (favorite) CommandButton.ICON_HEART_FILLED else CommandButton.ICON_HEART_UNFILLED)
++          .setDisplayName(if (favorite) "Quitar de favoritas" else "Añadir a favoritas")
++          .setEnabled(true)
++          .setSessionCommand(SessionCommand(ACTION_FAVORITE, Bundle.EMPTY))
++          .setSlots(CommandButton.SLOT_OVERFLOW)
++          .build()
++      )
++    }
++
+     session.setCustomLayout(mediaButtons)
+     session.setMediaButtonPreferences(mediaButtons)
+   }
+@@ -322,15 +380,72 @@ class AudioControlsService : MediaSessionService() {
+ 
+   private fun resolveSessionPlayer(player: AudioPlayer, options: AudioLockScreenOptions?): Player {
+     val isLive = options?.isLiveStream ?: player.isLive
+-    if (!isLive) {
++    val skipPrevious = options?.showSkipPrevious == true
++    val skipNext = options?.showSkipNext == true
++    if (!isLive && !skipPrevious && !skipNext) {
+       return player.ref
+     }
+ 
++    // Quartz patch: the queue lives in JS, so previous/next are advertised here and
++    // forwarded as "remoteCommand" events (notification, headset buttons, lock screen, Auto).
+     return object : ForwardingPlayer(player.ref) {
+-      override fun getAvailableCommands(): Player.Commands {
+-        return super.getAvailableCommands().buildUpon()
+-          .remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+-          .build()
++      private fun withQueueCommands(commands: Player.Commands): Player.Commands {
++        val builder = commands.buildUpon()
++        if (isLive) builder.remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
++        if (skipPrevious) builder.add(Player.COMMAND_SEEK_TO_PREVIOUS).add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
++        if (skipNext) builder.add(Player.COMMAND_SEEK_TO_NEXT).add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
++        return builder.build()
++      }
++
++      override fun getAvailableCommands(): Player.Commands = withQueueCommands(super.getAvailableCommands())
++
++      override fun isCommandAvailable(command: Int): Boolean = availableCommands.contains(command)
++
++      override fun hasPreviousMediaItem(): Boolean = skipPrevious || super.hasPreviousMediaItem()
++
++      override fun hasNextMediaItem(): Boolean = skipNext || super.hasNextMediaItem()
++
++      override fun seekToPrevious() {
++        if (skipPrevious) player.emitRemoteCommand("previous") else super.seekToPrevious()
++      }
++
++      override fun seekToPreviousMediaItem() {
++        if (skipPrevious) player.emitRemoteCommand("previous") else super.seekToPreviousMediaItem()
++      }
++
++      override fun seekToNext() {
++        if (skipNext) player.emitRemoteCommand("next") else super.seekToNext()
++      }
++
++      override fun seekToNextMediaItem() {
++        if (skipNext) player.emitRemoteCommand("next") else super.seekToNextMediaItem()
++      }
++
++      override fun addListener(listener: Player.Listener) {
++        super.addListener(QueueCommandsListener(this, listener))
++      }
++
++      override fun removeListener(listener: Player.Listener) {
++        super.removeListener(QueueCommandsListener(this, listener))
++      }
++
++      // Re-applies the queue commands whenever the wrapped player reports new ones.
++      inner class QueueCommandsListener(
++        private val owner: Player,
++        private val delegate: Player.Listener
++      ) : Player.Listener by delegate {
++        override fun onAvailableCommandsChanged(availableCommands: Player.Commands) {
++          delegate.onAvailableCommandsChanged(withQueueCommands(availableCommands))
++        }
++
++        override fun onEvents(player: Player, events: Player.Events) {
++          delegate.onEvents(owner, events)
++        }
++
++        override fun equals(other: Any?): Boolean =
++          other is QueueCommandsListener && other.delegate == delegate
++
++        override fun hashCode(): Int = delegate.hashCode()
+       }
+     }
+   }
+@@ -371,7 +486,7 @@ class AudioControlsService : MediaSessionService() {
+           updateMetadata(metadata)
+         }
+         val session = MediaSession.Builder(context, sessionPlayer)
+-          .setCallback(AudioMediaSessionCallback())
++          .setCallback(AudioMediaSessionCallback { currentPlayer?.emitRemoteCommand("favorite") })
+           .build()
+ 
+         // Replace the basic media session with a session connected to our playback service.
+@@ -402,6 +517,8 @@ class AudioControlsService : MediaSessionService() {
+     }
+     currentMetadata = metadata
+     sessionMetadataPlayer?.updateMetadata(metadata)
++    // Quartz patch: the heart button follows the favourite state.
++    appContext?.mainQueue?.launch { updateSessionCustomLayout(player.ref.isPlaying) }
+     currentMetadata?.artworkUrl?.let {
+       loadArtworkFromUrl(it) { bitmap ->
+         currentArtwork = bitmap
+@@ -452,7 +569,7 @@ class AudioControlsService : MediaSessionService() {
+           updateMetadata(metadata)
+         }
+         val session = MediaSession.Builder(context, sessionPlayer)
+-          .setCallback(AudioMediaSessionCallback())
++          .setCallback(AudioMediaSessionCallback { currentPlayer?.emitRemoteCommand("favorite") })
+           .build()
+ 
+         player.mediaSession.release()
+@@ -558,6 +675,9 @@ class AudioControlsService : MediaSessionService() {
+ 
+     const val ACTION_SEEK_FORWARD = "expo.modules.audio.action.SEEK_FORWARD"
+     const val ACTION_SEEK_BACKWARD = "expo.modules.audio.action.SEEK_BACKWARD"
++    const val ACTION_SKIP_PREVIOUS = "expo.modules.audio.action.SKIP_PREVIOUS"
++    const val ACTION_SKIP_NEXT = "expo.modules.audio.action.SKIP_NEXT"
++    const val ACTION_FAVORITE = "expo.modules.audio.action.FAVORITE"
+ 
+     const val SEEK_INTERVAL_MS = 10000L
+   }
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
+index 839aaef..216b18e 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioMediaSessionCallback.kt
+@@ -10,7 +10,10 @@ import androidx.media3.common.util.UnstableApi
+ import com.google.common.util.concurrent.ListenableFuture
+ 
+ @OptIn(UnstableApi::class)
+-class AudioMediaSessionCallback : MediaSession.Callback {
++class AudioMediaSessionCallback(
++  // Quartz patch: the heart button in the notification, handled in JS.
++  private val onFavorite: () -> Unit = {}
++) : MediaSession.Callback {
+   override fun onConnect(
+     session: MediaSession,
+     controller: MediaSession.ControllerInfo
+@@ -24,17 +27,19 @@ class AudioMediaSessionCallback : MediaSession.Callback {
+             .add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+             .add(Player.COMMAND_SEEK_FORWARD)
+             .add(Player.COMMAND_SEEK_BACK)
+-            // Remove track navigation commands
+-            .remove(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+-            .remove(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+-            .remove(Player.COMMAND_SEEK_TO_PREVIOUS)
+-            .remove(Player.COMMAND_SEEK_TO_NEXT)
++            // Quartz patch: track navigation stays allowed; the session player only
++            // advertises it when skip buttons are enabled (see resolveSessionPlayer).
++            .add(Player.COMMAND_SEEK_TO_PREVIOUS)
++            .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
++            .add(Player.COMMAND_SEEK_TO_NEXT)
++            .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+             .build()
+         )
+         .setAvailableSessionCommands(
+           MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+             .add(SessionCommand(AudioControlsService.ACTION_SEEK_BACKWARD, Bundle.EMPTY))
+             .add(SessionCommand(AudioControlsService.ACTION_SEEK_FORWARD, Bundle.EMPTY))
++            .add(SessionCommand(AudioControlsService.ACTION_FAVORITE, Bundle.EMPTY))
+             .build()
+         )
+         .build()
+@@ -56,6 +61,7 @@ class AudioMediaSessionCallback : MediaSession.Callback {
+       AudioControlsService.ACTION_SEEK_BACKWARD -> {
+         session.player.seekTo(session.player.currentPosition - AudioControlsService.SEEK_INTERVAL_MS)
+       }
++      AudioControlsService.ACTION_FAVORITE -> onFavorite()
+     }
+     return super.onCustomCommand(session, controller, command, args)
+   }

@@ -1,0 +1,85 @@
+{
+  "name": "quartz",
+  "version": "1.0.0",
+  "author": "YizusTC (Jesus Rafael Tapia Camargo) <eztermnajimi@gmail.com>",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "main": "index.ts",
+  "dependencies": {
+    "@expo-google-fonts/barlow": "^0.4.1",
+    "@expo-google-fonts/barlow-condensed": "^0.4.1",
+    "@expo-google-fonts/caveat": "^0.4.2",
+    "@expo-google-fonts/michroma": "^0.4.2",
+    "@expo/vector-icons": "^15.0.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@shopify/react-native-skia": "2.6.2",
+    "eslint-config-expo": "~57.0.2",
+    "expo": "~57.0.25",
+    "expo-asset": "~57.0.18",
+    "expo-audio": "~57.0.5",
+    "expo-constants": "~57.0.19",
+    "expo-document-picker": "~57.0.2",
+    "expo-file-system": "~57.0.7",
+    "expo-font": "~57.0.4",
+    "expo-haptics": "~57.0.3",
+    "expo-image": "~57.0.5",
+    "expo-image-picker": "~57.0.20",
+    "expo-keep-awake": "~57.0.2",
+    "expo-linear-gradient": "~57.0.2",
+    "expo-linking": "~57.0.11",
+    "expo-media-library": "~57.0.5",
+    "expo-router": "~57.0.23",
+    "expo-splash-screen": "~57.0.9",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.4",
+    "expo-video": "~57.0.5",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-reanimated": "4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-screens": "~4.26.0",
+    "react-native-svg": "15.15.4",
+    "react-native-worklets": "0.10.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "eslint": "^9.39.5",
+    "patch-package": "^8.0.1",
+    "prettier": "^3.9.9",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "preview": "tsx --tsconfig tools/tsconfig.preview.json tools/preview.tsx",
+    "lint": "expo lint",
+    "brand": "python3 tools/brand_assets.py",
+    "postinstall": "patch-package"
+  },
+  "allowScripts": {
+    "@shopify/react-native-skia@2.6.2": true,
+    "esbuild@0.28.2": true,
+    "unrs-resolver@1.12.2": true
+  },
+  "reanimated": {
+    "staticFeatureFlags": {
+      "ANDROID_SYNCHRONOUSLY_UPDATE_UI_PROPS": true
+    }
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-audio"
+        ]
+      }
+    }
+  }
+}

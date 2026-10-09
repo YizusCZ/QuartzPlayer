@@ -1,0 +1,38 @@
+QuartzPlayer - Licencia propietaria con código visible
+Copyright (c) 2026 YizusTC (Jesus Rafael Tapia Camargo). Todos los derechos reservados.
+
+El código fuente, los diseños, los gráficos (incluidos el logo, el cassette y
+sus estilos), los textos y demás materiales de este repositorio (en adelante,
+"el Software") son obra de YizusTC (Jesus Rafael Tapia Camargo) y están protegidos por las leyes de
+derechos de autor.
+
+1. Lo que sí puedes hacer
+   Puedes ver y leer el Software en este repositorio con fines personales de
+   estudio o consulta.
+
+2. Lo que no puedes hacer sin permiso previo y por escrito del autor
+   a) Copiar, reproducir o descargar el Software, total o parcialmente, para
+      usarlo fuera de la consulta descrita en el punto 1.
+   b) Modificarlo, adaptarlo, traducirlo o crear obras derivadas de él.
+   c) Distribuirlo, publicarlo, sublicenciarlo, venderlo o alquilarlo, ni
+      compilarlo para publicar la aplicación resultante en tiendas o sitios web.
+   d) Usarlo, total o parcialmente, en otro producto o servicio, comercial o
+      no.
+   e) Eliminar o alterar este aviso de derechos de autor o la autoría.
+
+3. Plataforma
+   El hecho de que el repositorio sea público no concede ninguna licencia
+   adicional. Las acciones que la plataforma que lo aloja permite por sus
+   propios términos (por ejemplo, ver el repositorio o crear un "fork" dentro
+   de ella) no autorizan ningún otro uso de los descritos en el punto 2.
+
+4. Componentes de terceros
+   Las dependencias y los recursos de terceros (por ejemplo, las bibliotecas
+   instaladas por npm y los parches sobre ellas) conservan sus propias
+   licencias. Esta licencia solo cubre el trabajo original del autor.
+
+5. Sin garantía
+   El Software se ofrece "tal cual", sin garantía de ningún tipo. El autor no
+   será responsable de ningún daño derivado de su uso.
+
+Para solicitar permisos: eztermnajimi@gmail.com (YizusTC)

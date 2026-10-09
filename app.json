@@ -1,0 +1,76 @@
+{
+  "expo": {
+    "name": "Quartz",
+    "slug": "quartz",
+    "scheme": "quartz",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0B0C",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.quartz.player",
+      "infoPlist": {
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
+    },
+    "android": {
+      "package": "com.quartz.player",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B0B0C",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": ["android.permission.POST_NOTIFICATIONS"],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": true,
+          "enableBackgroundPlayback": true
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": false,
+          "savePhotosPermission": false,
+          "granularPermissions": ["audio"]
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B0B0C",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      "expo-image",
+      "expo-font",
+      "expo-asset",
+      "expo-video",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Quartz usa tus fotos y vídeos para las carátulas de listas y los visualizadores.",
+          "cameraPermission": false
+        }
+      ],
+      "./plugins/withGradleMemory"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

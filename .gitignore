@@ -1,0 +1,75 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+tools/preview-out/
+
+# Discord Social SDK: full multi-platform download (only the Android AAR is used)
+modules/discord-presence/android/libs/*.zip
+
+# Secrets: keep real values in .env (template in .env.example)
+.env
+.env.*
+!.env.example
+
+# Claude Code (assistant settings, not part of the app)
+.claude/
+CLAUDE.md
+
+# Design references (photos used while drawing the cassette)
+Referencias/
+/1.jpg
+
+# Discord Social SDK binary: proprietary, not redistributable (see README)
+modules/discord-presence/android/libs/*.aar
+
+# Build outputs
+*.apk
+*.aab
+
+# The project installs with npm (package-lock.json); the old pnpm files are stale
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Native module build outputs
+modules/*/android/build/
+modules/*/android/.cxx/
+modules/*/android/.gradle/
+modules/*/ios/build/

@@ -1,0 +1,48 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.discordpresence'
+version = '1.0.0'
+
+// Discord Social SDK (downloaded from the Developer Portal, not redistributable
+// through npm). The AAR carries the Java glue and the native library; its prefab
+// headers + .so are extracted for our JNI bridge to compile and link against.
+def sdkAar = file('libs/discord_partner_sdk.aar')
+def sdkDir = layout.buildDirectory.dir('discord-sdk').get().asFile
+def archs = (findProperty('reactNativeArchitectures') ?: 'armeabi-v7a,arm64-v8a,x86,x86_64')
+  .split(',').collect { it.trim() }.findAll { it }
+
+android {
+  namespace 'expo.modules.discordpresence'
+  ndkVersion '27.1.12297006'
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+    externalNativeBuild {
+      cmake {
+        // 16 KB page alignment (required on Android 15+; not the NDK 27 default).
+        arguments '-DANDROID_STL=c++_shared', '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON', "-DDISCORD_SDK_DIR=${sdkDir}/prefab/modules/discord_partner_sdk"
+        cppFlags '-std=c++17'
+      }
+    }
+    ndk { abiFilters(*archs) }
+  }
+  externalNativeBuild {
+    cmake { path 'src/main/cpp/CMakeLists.txt' }
+  }
+}
+
+dependencies {
+  implementation files('libs/discord_partner_sdk.aar')
+  implementation 'androidx.browser:browser:1.8.0'
+}
+
+tasks.register('extractDiscordSdk', Copy) {
+  from(zipTree(sdkAar)) { include 'prefab/modules/discord_partner_sdk/**' }
+  into sdkDir
+}
+tasks.configureEach { t ->
+  if (t.name.startsWith('configureCMake') || t.name.startsWith('buildCMake')) t.dependsOn('extractDiscordSdk')
+}
