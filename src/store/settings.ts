@@ -5,10 +5,13 @@ import type { CassetteSkinId } from '@/components/cassette/skins';
 
 export type VisualizerId = 'cassette' | 'lyrics' | 'video' | 'spectrum' | 'led' | 'mirror' | 'radial' | 'vu' | 'scope';
 
+/** Audio quality for YouTube downloads. */
+export type YtDownloadQuality = 'best' | 'high' | 'normal';
+
 export const VISUALIZERS: { id: VisualizerId; name: string; detail: string; needsAnalyzer: boolean }[] = [
   { id: 'cassette', name: 'Cassette', detail: 'Carretes animados según el progreso', needsAnalyzer: false },
   { id: 'lyrics', name: 'Letras', detail: 'Karaoke sincronizado palabra por palabra', needsAnalyzer: false },
-  { id: 'video', name: 'Vídeo', detail: 'Tus vídeos o la portada animada a pantalla completa', needsAnalyzer: false },
+  { id: 'video', name: 'Vídeo', detail: 'Tus vídeos, GIF o la portada animada a pantalla completa', needsAnalyzer: false },
   { id: 'spectrum', name: 'Barras', detail: 'Espectro de barras con picos', needsAnalyzer: true },
   { id: 'led', name: 'LED Hi-Fi', detail: 'Segmentos estilo ecualizador de equipo', needsAnalyzer: true },
   { id: 'mirror', name: 'Espejo', detail: 'Barras simétricas desde el centro', needsAnalyzer: true },
@@ -51,10 +54,14 @@ type Settings = {
   scanOnLaunch: boolean;
   /** Look lyrics up on LRCLIB when the file has none. */
   onlineLyrics: boolean;
+  /** Home screen tab: your files or YouTube Music. */
+  homeTab: 'local' | 'youtube';
   /** Look up Apple Music motion artwork (animated covers and full-screen loops). */
   motionArt: boolean;
   /** Show what's playing as Discord Rich Presence (Android, Discord app installed). */
   discordPresence: boolean;
+  /** While you are in a room, Discord shows a "join" button so friends can come in. */
+  discordRoomInvite: boolean;
   /** Bar visualizers. */
   barCount: 24 | 32 | 48 | 64;
   palette: PaletteId;
@@ -67,8 +74,17 @@ type Settings = {
   ambientShare: boolean;
   /** Modes pinned to the player's quick-access bar (the rest live under "Más"). */
   quickModes: PlayerMode[];
+  /** Shape of the cover in the player. */
+  coverShape: 'square' | 'rounded' | 'round';
+  /** Lyrics text size. */
+  lyricsSize: 'small' | 'normal' | 'large';
+  /** Home sections (local tab). */
+  homePlaylists: boolean;
+  homeRecent: boolean;
   /** Last visualizer used; the player reopens in it. */
   lastVisualizer: VisualizerId;
+  /** YouTube download quality: 'best' (Opus ~256k), 'high' (Opus ~160k), 'normal' (AAC 128k). */
+  ytDownloadQuality: YtDownloadQuality;
   set: (patch: Partial<Omit<Settings, 'set'>>) => void;
 };
 
@@ -87,7 +103,9 @@ export const useSettings = create<Settings>()(
       scanOnLaunch: true,
       onlineLyrics: true,
       discordPresence: false,
+      discordRoomInvite: true,
       motionArt: true,
+      homeTab: 'local',
       barCount: 48,
       palette: 'amber',
       peakHold: true,
@@ -96,6 +114,11 @@ export const useSettings = create<Settings>()(
       ambientShare: true,
       quickModes: ['cover', 'cassette', 'lyrics', 'spectrum'],
       lastVisualizer: 'cassette',
+      coverShape: 'rounded',
+      lyricsSize: 'normal',
+      homePlaylists: true,
+      homeRecent: true,
+      ytDownloadQuality: 'best',
       set: (patch) => set(patch),
     }),
     { name: 'quartz.settings', storage: persistStorage() },

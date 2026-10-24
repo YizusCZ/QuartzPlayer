@@ -72,6 +72,12 @@ export default function About() {
             (artista y álbum) y el icono del efecto activo se carga desde Twemoji.
           </P>
           <P>
+            • Música libre: tus búsquedas se envían a Jamendo y a Internet Archive. Solo se ofrecen obras con licencia
+            Creative Commons, de dominio público o conciertos que los artistas permiten compartir; las grabaciones que
+            esos servicios marcan como solo para escuchar en línea no se pueden descargar. Cada descarga guarda su
+            licencia y el enlace a la obra original.
+          </P>
+          <P>
             • Tus imágenes y vídeos para listas y visualizadores se copian dentro de la app y no salen del teléfono.
           </P>
           <P>• Los efectos de sonido se aplican en tiempo real; tus archivos nunca se modifican.</P>
@@ -95,6 +101,12 @@ export default function About() {
             name="Apple Music · iTunes"
             what="Portadas animadas y búsqueda de álbumes"
             url="https://music.apple.com"
+          />
+          <Credit name="Jamendo" what="Música libre de artistas independientes" url="https://www.jamendo.com" />
+          <Credit
+            name="Internet Archive"
+            what="Live Music Archive y audio de dominio público"
+            url="https://archive.org"
           />
           <Credit
             name="Twemoji"

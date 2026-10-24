@@ -5,8 +5,9 @@ import { Player } from '@/audio/engine';
 import { groupTracks, sortTracks, totalDuration, type SortKey } from '@/library/selectors';
 import { formatTime, isHiRes, type Track } from '@/library/types';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
+import { HelpButton, TourTarget, useTourRef } from '@/components/tour/Tour';
 import { Artwork } from '@/components/ui/Artwork';
-import { PlaylistCover } from '@/components/cassette/PlaylistCover';
+import { PlaylistCoverEditor } from '@/components/cassette/PlaylistCoverEditor';
 import { FormatBadge } from '@/components/ui/FormatBadge';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
@@ -36,6 +37,7 @@ export default function Songs() {
     title = 'Canciones',
   } = useLocalSearchParams<{ filter?: Filter; value?: string; title?: string }>();
   const tracksMap = useLibrary((s) => s.tracks);
+  const remote = useLibrary((s) => s.remote);
   const favorites = useLibrary((s) => s.favorites);
   const plays = useLibrary((s) => s.plays);
   const playlist = useLibrary((s) => (filter === 'playlist' ? s.playlists.find((p) => p.id === value) : undefined));
@@ -57,16 +59,16 @@ export default function Songs() {
         );
       case 'favorites':
         return sortTracks(
-          all.filter((t) => favorites[t.id]),
+          [...all, ...Object.values(remote)].filter((t) => favorites[t.id]),
           sort,
         );
       case 'recent':
-        return all
+        return [...all, ...Object.values(remote)]
           .filter((t) => plays[t.id])
           .sort((a, b) => plays[b.id].last - plays[a.id].last)
           .slice(0, 100);
       case 'top':
-        return all
+        return [...all, ...Object.values(remote)]
           .filter((t) => plays[t.id])
           .sort((a, b) => plays[b.id].count - plays[a.id].count)
           .slice(0, 100);
@@ -80,11 +82,11 @@ export default function Songs() {
         return sortable ? sortTracks(tracks, sort) : tracks;
       }
       case 'playlist':
-        return (playlist?.trackIds ?? []).map((id) => tracksMap[id]).filter((t): t is Track => !!t);
+        return (playlist?.trackIds ?? []).map((id) => tracksMap[id] ?? remote[id]).filter((t): t is Track => !!t);
       default:
         return sortTracks(all, sort);
     }
-  }, [tracksMap, favorites, plays, playlist, filter, value, sort, sortable]);
+  }, [tracksMap, remote, favorites, plays, playlist, filter, value, sort, sortable]);
 
   const ids = useMemo(() => list.map((t) => t.id), [list]);
   const play = useCallback((i: number) => Player.playTracks(ids, i, { shuffle: false }), [ids]);
@@ -93,6 +95,7 @@ export default function Songs() {
     (index: number, id: string) => openActions(id, playlistId ? { playlistId, index } : undefined),
     [openActions, playlistId],
   );
+  const addRef = useTourRef('playlist.add');
   const isAlbum = filter === 'album';
 
   const header = (
@@ -100,14 +103,17 @@ export default function Songs() {
       {isAlbum && list[0] ? <AlbumHeader tracks={list} /> : null}
       {playlist ? (
         <View style={styles.album}>
-          <PlaylistCover
-            playlist={playlist}
-            count={list.length}
-            duration={list.reduce((a, t) => a + (t.duration ?? 0), 0)}
-            size={200}
-            radius={radius.md}
-          />
+          <TourTarget id="playlist.cover">
+            <PlaylistCoverEditor
+              playlist={playlist}
+              count={list.length}
+              duration={list.reduce((a, t) => a + (t.duration ?? 0), 0)}
+              size={200}
+              radius={radius.md}
+            />
+          </TourTarget>
           <Pressable
+            ref={addRef}
             onPress={() => router.push({ pathname: '/pick-songs', params: { playlist: playlist.id } })}
             style={styles.addSongs}
             accessibilityRole="button"
@@ -168,23 +174,26 @@ export default function Songs() {
         subtitle={`${list.length} canciones · ${formatTime(totalDuration(list))}`}
         right={
           playlist ? (
-            <IconButton
-              icon="delete-outline"
-              label="Eliminar lista"
-              onPress={() =>
-                Alert.alert('Eliminar lista', `¿Eliminar “${playlist.name}”? Las canciones no se borran.`, [
-                  { text: 'Cancelar', style: 'cancel' },
-                  {
-                    text: 'Eliminar',
-                    style: 'destructive',
-                    onPress: () => {
-                      useLibrary.getState().deletePlaylist(playlist.id);
-                      router.back();
+            <>
+              <HelpButton tour="playlist" />
+              <IconButton
+                icon="delete-outline"
+                label="Eliminar lista"
+                onPress={() =>
+                  Alert.alert('Eliminar lista', `¿Eliminar “${playlist.name}”? Las canciones no se borran.`, [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Eliminar',
+                      style: 'destructive',
+                      onPress: () => {
+                        useLibrary.getState().deletePlaylist(playlist.id);
+                        router.back();
+                      },
                     },
-                  },
-                ])
-              }
-            />
+                  ])
+                }
+              />
+            </>
           ) : null
         }
       />

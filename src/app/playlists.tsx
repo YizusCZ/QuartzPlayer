@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { Player } from '@/audio/engine';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
 import { PlaylistCover, playlistSkin } from '@/components/cassette/PlaylistCover';
-import { SKINS, type CassetteSkinId } from '@/components/cassette/skins';
+import { getSkin, useSkinList } from '@/components/cassette/customSkins';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { ScreenHeader } from '@/components/ui/ScreenHeader';
@@ -25,12 +25,15 @@ function startList(list: string[], shuffle: boolean) {
 export default function Playlists() {
   useAccent();
   const playlists = useLibrary((s) => s.playlists);
-  const tracks = useLibrary((s) => s.tracks);
+  const local = useLibrary((s) => s.tracks);
+  const remote = useLibrary((s) => s.remote);
+  const tracks = useMemo(() => ({ ...remote, ...local }), [local, remote]);
   const showToast = useUI((s) => s.showToast);
   const [menu, setMenu] = useState<Playlist | null>(null);
   const [renaming, setRenaming] = useState<Playlist | null>(null);
   const [rename, setRename] = useState('');
   const [styling, setStyling] = useState<Playlist | null>(null);
+  const skinList = useSkinList();
 
   const ids = (p: Playlist) => p.trackIds.filter((id) => tracks[id]);
 
@@ -150,7 +153,7 @@ export default function Playlists() {
               <SheetItem
                 icon="palette-outline"
                 label="Estilo del cassette…"
-                detail={SKINS[playlistSkin(menu)].name.split(' · ')[0]}
+                detail={getSkin(playlistSkin(menu)).name.split(' · ')[0]}
                 onPress={() => {
                   setStyling(menu);
                   setMenu(null);
@@ -195,7 +198,8 @@ export default function Playlists() {
           <>
             <SheetTitle sub="La carátula de la lista">Estilo del cassette</SheetTitle>
             <ScrollView contentContainerStyle={styles.skinGrid}>
-              {(Object.keys(SKINS) as CassetteSkinId[]).map((id) => {
+              {skinList.map((sk) => {
+                const id = sk.id;
                 const on = playlistSkin(styling) === id;
                 return (
                   <Pressable
@@ -207,7 +211,7 @@ export default function Playlists() {
                     style={[styles.skinCell, on && { borderColor: colors.accent }]}
                     accessibilityRole="radio"
                     accessibilityState={{ checked: on }}
-                    accessibilityLabel={SKINS[id].name}
+                    accessibilityLabel={sk.name}
                   >
                     <PlaylistCover
                       playlist={{ ...styling, cover: undefined, skin: id }}
@@ -216,7 +220,7 @@ export default function Playlists() {
                       radius={10}
                     />
                     <Txt variant="caption" numberOfLines={1} style={on && { color: colors.accent }}>
-                      {SKINS[id].name.split(' · ')[0]}
+                      {sk.name.split(' · ')[0]}
                     </Txt>
                   </Pressable>
                 );

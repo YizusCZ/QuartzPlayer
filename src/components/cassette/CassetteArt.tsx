@@ -28,11 +28,13 @@ import {
   rrect,
   vec,
   type AnimatedProp,
+  Image as SkImageView,
   type SkFont,
+  type SkImage,
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import { effects, rgb } from './shaders';
-import type { CassetteSkin } from './skins';
+import { STICKER_PATHS, type CassetteSkin, type Sticker, type StickerKind } from './skins';
 
 export const CASSETTE_W = 1000;
 export const CASSETTE_H = 636;
@@ -417,6 +419,102 @@ export function CassetteBase(p: BaseProps) {
       <Screw x={974} y={26} />
       <Screw x={26} y={610} />
       <Screw x={974} y={610} />
+
+      {skin.stickers?.map((st) => (
+        <StickerShape key={st.id} sticker={st} />
+      ))}
+    </Group>
+  );
+}
+
+const stickerPaths = new Map<string, ReturnType<typeof Skia.Path.MakeFromSVGString>>();
+const stickerPath = (kind: StickerKind) => {
+  if (!stickerPaths.has(kind)) stickerPaths.set(kind, Skia.Path.MakeFromSVGString(STICKER_PATHS[kind]));
+  return stickerPaths.get(kind) ?? null;
+};
+
+/** Decoded pictures for image stickers, by file uri. */
+const stickerImages = new Map<string, SkImage>();
+
+/** Decodes the pictures a set of stickers needs; call before drawing them. */
+export async function loadStickerImages(stickers: Sticker[] | undefined): Promise<void> {
+  const uris = (stickers ?? []).map((s) => s.uri).filter((u): u is string => !!u && !stickerImages.has(u));
+  await Promise.all(
+    uris.map(async (uri) => {
+      try {
+        const img = Skia.Image.MakeImageFromEncoded(await Skia.Data.fromURI(uri));
+        if (img) stickerImages.set(uri, img);
+      } catch {
+        // missing file: the sticker is skipped
+      }
+    }),
+  );
+}
+
+/** A die-cut vinyl sticker: the shape (or your picture) with a white border and a soft shadow. */
+export function StickerShape({ sticker: st, selected }: { sticker: Sticker; selected?: boolean }) {
+  if (st.kind === 'image') {
+    const img = st.uri ? stickerImages.get(st.uri) : undefined;
+    if (!img) return null;
+    const aspect = st.aspect ?? img.width() / Math.max(1, img.height());
+    const w = aspect >= 1 ? st.size : st.size * aspect;
+    const h = aspect >= 1 ? st.size / aspect : st.size;
+    const b = Math.max(3, st.size * 0.05);
+    const r = Math.min(w, h) * 0.12;
+    return (
+      <Group transform={[{ translateX: st.x }, { translateY: st.y }, { rotate: st.rotate }]}>
+        <RoundedRect
+          x={-w / 2 - b}
+          y={-h / 2 - b + 2}
+          width={w + b * 2}
+          height={h + b * 2}
+          r={r + b}
+          color="rgba(0,0,0,0.3)"
+        />
+        <RoundedRect x={-w / 2 - b} y={-h / 2 - b} width={w + b * 2} height={h + b * 2} r={r + b} color="#FFFFFF" />
+        <Group clip={rrect(rect(-w / 2, -h / 2, w, h), r, r)}>
+          <SkImageView image={img} x={-w / 2} y={-h / 2} width={w} height={h} fit="cover" />
+        </Group>
+        {selected ? (
+          <RoundedRect
+            x={-w / 2 - b}
+            y={-h / 2 - b}
+            width={w + b * 2}
+            height={h + b * 2}
+            r={r + b}
+            color="#3E8FE0"
+            style="stroke"
+            strokeWidth={3}
+          />
+        ) : null}
+      </Group>
+    );
+  }
+  const path = stickerPath(st.kind);
+  if (!path) return null;
+  const k = st.size / 24;
+  return (
+    <Group
+      transform={[
+        { translateX: st.x },
+        { translateY: st.y },
+        { rotate: st.rotate },
+        { scale: k },
+        { translateX: -12 },
+        { translateY: -12 },
+      ]}
+    >
+      <Path
+        path={path}
+        color="rgba(0,0,0,0.28)"
+        style="stroke"
+        strokeWidth={4.2}
+        strokeJoin="round"
+        transform={[{ translateY: 0.6 }]}
+      />
+      <Path path={path} color="#FFFFFF" style="stroke" strokeWidth={3.4} strokeJoin="round" />
+      <Path path={path} color={st.color} />
+      {selected ? <Path path={path} color="#3E8FE0" style="stroke" strokeWidth={0.9} strokeJoin="round" /> : null}
     </Group>
   );
 }

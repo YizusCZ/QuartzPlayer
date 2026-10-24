@@ -13,3 +13,8 @@ android {
     versionName '1.0.0'
   }
 }
+
+dependencies {
+  // HeadlessJsTaskContext (keeps JS timers alive in the background during a room).
+  implementation 'com.facebook.react:react-android'
+}

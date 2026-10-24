@@ -66,7 +66,9 @@ Java_expo_modules_discordpresence_DiscordBridge_nativeUpdate(JNIEnv *env,
                                                              jstring smallImage,
                                                              jstring smallText,
                                                              jlong startMs,
-                                                             jlong endMs) {
+                                                             jlong endMs,
+                                                             jstring buttonLabel,
+                                                             jstring buttonUrl) {
   if (!client) return;
 
   discordpp::Activity activity;
@@ -91,6 +93,15 @@ Java_expo_modules_discordpresence_DiscordBridge_nativeUpdate(JNIEnv *env,
     if (startMs > 0) timestamps.SetStart(static_cast<uint64_t>(startMs));
     if (endMs > 0) timestamps.SetEnd(static_cast<uint64_t>(endMs));
     activity.SetTimestamps(timestamps);
+  }
+  // In an open room: a button (seen by others) that opens the invite page.
+  auto label = optional(env, buttonLabel);
+  auto url = optional(env, buttonUrl);
+  if (label && url) {
+    discordpp::ActivityButton button;
+    button.SetLabel(*label);
+    button.SetUrl(*url);
+    activity.AddButton(button);
   }
   client->UpdateRichPresence(std::move(activity), [](discordpp::ClientResult result) {
     bool ok = result.Successful();

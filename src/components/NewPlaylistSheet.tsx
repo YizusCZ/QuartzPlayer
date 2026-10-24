@@ -8,15 +8,14 @@ import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { PlaylistCover, playlistSkin } from '@/components/cassette/PlaylistCover';
-import { SKINS, type CassetteSkinId } from '@/components/cassette/skins';
+import { useSkinList } from '@/components/cassette/customSkins';
+import type { CassetteSkinId } from '@/components/cassette/skins';
 import { Sheet, SheetTitle } from '@/components/ui/Sheet';
 import { Txt } from '@/components/ui/Txt';
 import { tap } from '@/lib/haptics';
 import { useLibrary } from '@/store/library';
 import { useUI } from '@/store/ui';
 import { colors, fonts, radius } from '@/theme';
-
-const SKIN_IDS = Object.keys(SKINS) as CassetteSkinId[];
 
 function suggestedName(): string {
   const taken = new Set(useLibrary.getState().playlists.map((p) => p.name.toLowerCase()));
@@ -43,6 +42,7 @@ function Form({ ids, onDone }: { ids: string[]; onDone: () => void }) {
   const [draftId] = useState(() => `draft_${Date.now().toString(36)}`);
   const [skin, setSkin] = useState<CassetteSkinId>(() => playlistSkin({ id: draftId }));
   const title = name.trim() || placeholder;
+  const skinList = useSkinList();
 
   const create = () => {
     tap('medium');
@@ -95,7 +95,8 @@ function Form({ ids, onDone }: { ids: string[]; onDone: () => void }) {
         contentContainerStyle={styles.skins}
         keyboardShouldPersistTaps="handled"
       >
-        {SKIN_IDS.map((id) => {
+        {skinList.map((sk) => {
+          const id = sk.id;
           const on = id === skin;
           return (
             <Pressable
@@ -104,16 +105,16 @@ function Form({ ids, onDone }: { ids: string[]; onDone: () => void }) {
               style={[styles.skin, on && { borderColor: colors.accent }]}
               accessibilityRole="radio"
               accessibilityState={{ checked: on }}
-              accessibilityLabel={SKINS[id].name}
+              accessibilityLabel={sk.name}
             >
               <LinearGradient
-                colors={[SKINS[id].shellLight, SKINS[id].shell]}
+                colors={[sk.shellLight, sk.shell]}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.skinShell}
               >
                 <LinearGradient
-                  colors={SKINS[id].stripe}
+                  colors={sk.stripe}
                   start={{ x: 0, y: 0 }}
                   end={{ x: 1, y: 0 }}
                   style={styles.skinStripe}

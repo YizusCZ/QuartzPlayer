@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useLibrary } from '@/store/library';
+import { trackById, useLibrary } from '@/store/library';
 import { currentTrackId, usePlayer } from '@/store/player';
 import { PALETTES, useSettings } from '@/store/settings';
 import { extractPalette, type RGB } from './palette';
@@ -32,7 +32,7 @@ function toBars(p: RGB[]): [string, string, string] {
 export function useVisualizerColors(): [string, string, string] {
   const palette = useSettings((s) => s.palette);
   const id = usePlayer(currentTrackId);
-  const uri = useLibrary((s) => (id ? s.tracks[id]?.artwork : undefined));
+  const uri = useLibrary((s) => trackById(s, id)?.artwork);
   const [cover, setCover] = useState<{ uri: string; colors: [string, string, string] } | null>(null);
 
   useEffect(() => {

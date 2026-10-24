@@ -88,9 +88,12 @@ function prettyName(filename: string): { title: string; artist?: string } {
     .replace(/\.[^.]+$/, '')
     .replace(/_/g, ' ')
     .trim();
-  const clean = base.replace(/^\d{1,3}[\s.\-_]+/, '');
+  const clean = base
+    .replace(/^\d{1,3}[\s.\-_]+/, '')
+    .replace(/\s*\[[\w-]+\]$/, '')
+    .trim();
   const m = /^(.+?)\s+-\s+(.+)$/.exec(clean);
-  return m ? { artist: m[1], title: m[2] } : { title: clean };
+  return m ? { artist: m[1].trim(), title: m[2].trim() } : { title: clean };
 }
 
 type Candidate = {
@@ -114,6 +117,7 @@ function decodePath(uri: string): string {
 
 export function readTrack(c: Candidate & { uri: string }): Track {
   const folder = decodePath(c.uri).replace(/\/[^/]*$/, '') || 'Música';
+  const isYt = folder === 'YouTube' || folder.endsWith('/YouTube');
   const src = fileSource(c.uri);
   let meta;
   try {
@@ -123,10 +127,25 @@ export function readTrack(c: Candidate & { uri: string }): Track {
   }
   const guess = prettyName(c.filename);
   const artist = meta.artist || guess.artist || 'Artista desconocido';
-  const album = meta.album || folder.split('/').pop() || 'Álbum desconocido';
-  const artwork = meta.picture
+  const rawAlbum = meta.album;
+  const album =
+    rawAlbum && rawAlbum !== 'YouTube'
+      ? rawAlbum
+      : isYt
+        ? (artist !== 'Artista desconocido' ? `${artist} - Single` : 'Sencillo')
+        : folder.split('/').pop() || 'Álbum desconocido';
+
+  let artwork = meta.picture
     ? cacheArtwork(`${meta.albumArtist ?? artist}|${album}|${meta.picture.data.length}`, meta.picture)
     : undefined;
+
+  if (!artwork && isYt) {
+    const vidMatch = /\[([\w-]+)\]/.exec(c.filename);
+    if (vidMatch?.[1]) {
+      const cached = new File(artworkDir(), `${hash(vidMatch[1])}.jpg`);
+      if (cached.exists) artwork = cached.uri;
+    }
+  }
   return {
     id: c.id,
     uri: c.uri,
@@ -158,10 +177,17 @@ export function musicDir(): Directory {
   return dir;
 }
 
+/**
+ * Quartz's own folders in Documents: video backgrounds (an .mp4 would pass as
+ * audio), covers and stickers. They are never music.
+ */
+const APP_DIRS = new Set(['videos', 'covers', 'stickers', 'artwork']);
+
 function walk(dir: Directory, out: Candidate[], depth = 0) {
   if (depth > 6) return;
   for (const entry of dir.list()) {
     if (entry instanceof Directory) {
+      if (depth === 0 && APP_DIRS.has(entry.name.toLowerCase())) continue;
       if (!entry.name.startsWith('.')) walk(entry, out, depth + 1);
     } else if (isAudioFile(entry.name)) {
       out.push({
@@ -256,7 +282,12 @@ async function doScan(manual: boolean) {
           skipped[c.id] = c.modified;
           continue;
         }
-        const track = readTrack({ ...c, uri });
+        const read = readTrack({ ...c, uri });
+        // A cover you chose survives the file being read again.
+        const prevCustom = known[c.id]?.customArtwork;
+        const track = prevCustom
+          ? { ...read, customArtwork: prevCustom, originalArtwork: read.artwork, artwork: prevCustom }
+          : read;
         if (skipShort && track.source === 'device' && track.duration > 0 && track.duration < SHORT_CLIP) {
           skipped[c.id] = c.modified;
           continue;
@@ -277,6 +308,14 @@ async function doScan(manual: boolean) {
       removed ||
       Object.keys(known).length !== Object.keys(tracks).length ||
       !useLibrary.getState().lastScan;
+    // A download may have finished while we were scanning: keep songs from
+    // Música libre (their metadata and licence come from the service, not the file).
+    const latest = useLibrary.getState().tracks;
+    for (const t of Object.values(latest)) {
+      const isYt = t.folder === 'YouTube' || t.folder.endsWith('/YouTube');
+      if (!t.origin && !isYt) continue;
+      if (tracks[t.id] || new File(t.uri).exists) tracks[t.id] = t;
+    }
     if (changed) useLibrary.getState().setLibrary(tracks, skipped);
     setScan({ running: false, done: fresh.length, total: fresh.length, message: undefined });
   } catch (e) {

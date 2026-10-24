@@ -1,4 +1,4 @@
-export type CassetteSkinId =
+export type BuiltinSkinId =
   | 'magenta'
   | 'sunset'
   | 'metal'
@@ -11,6 +11,30 @@ export type CassetteSkinId =
   | 'sakura'
   | 'lime'
   | 'chrome';
+
+/** Built-in styles, plus the ones you make in "Crea tu cassette" (custom_…). */
+export type CassetteSkinId = BuiltinSkinId | `custom_${string}`;
+
+export type StickerKind =
+  'star' | 'heart' | 'bolt' | 'note' | 'sparkle' | 'flower' | 'smile' | 'moon' | 'flame' | 'crown' | 'cherry' | 'peace';
+
+/** A sticker on the shell, in cassette design units (1000 × 636). */
+export type Sticker = {
+  id: string;
+  /** A drawn shape, or 'image' for one of your pictures (`uri`). */
+  kind: StickerKind | 'image';
+  /** Picture file (Documents/stickers) for image stickers. */
+  uri?: string;
+  /** Picture width / height, so the sticker keeps its proportions. */
+  aspect?: number;
+  x: number;
+  y: number;
+  /** Size of the sticker's longest side, in design units. */
+  size: number;
+  /** Radians. */
+  rotate: number;
+  color: string;
+};
 
 export type CassetteSkin = {
   id: CassetteSkinId;
@@ -33,9 +57,10 @@ export type CassetteSkin = {
   prefix: string;
   window: [string, string];
   pane: string;
+  stickers?: Sticker[];
 };
 
-export const SKINS: Record<CassetteSkinId, CassetteSkin> = {
+export const SKINS: Record<BuiltinSkinId, CassetteSkin> = {
   // Photo ref 1–2: taupe moulding, white label, hot-magenta foil.
   magenta: {
     id: 'magenta',
@@ -296,6 +321,32 @@ export function tapeLength(durationSec: number): number {
   return [46, 54, 60, 74, 90, 100, 110].find((m) => m >= needed) ?? 120;
 }
 
-export function modelCode(skin: CassetteSkinId, durationSec: number): string {
-  return `${SKINS[skin].prefix} ${tapeLength(durationSec)}`;
+export const isBuiltinSkin = (id: string): id is BuiltinSkinId => id in SKINS;
+
+/** "QX 90": the skin's prefix and the tape length. Custom styles print QZ. */
+export function modelCode(skin: CassetteSkinId | CassetteSkin, durationSec: number): string {
+  const prefix = typeof skin === 'string' ? (isBuiltinSkin(skin) ? SKINS[skin].prefix : 'QZ') : skin.prefix;
+  return `${prefix} ${tapeLength(durationSec)}`;
 }
+
+/** Sticker shapes, as SVG paths in a 24 × 24 box. */
+export const STICKER_PATHS: Record<StickerKind, string> = {
+  star: 'M12 2l2.9 6.6 7.1.6-5.4 4.7 1.6 7L12 17.3 5.8 20.9l1.6-7L2 9.2l7.1-.6z',
+  heart:
+    'M12 21s-7.5-4.6-9.6-9.3C.9 8.2 3 4.5 6.6 4.5c2.1 0 3.6 1.2 5.4 3.2 1.8-2 3.3-3.2 5.4-3.2 3.6 0 5.7 3.7 4.2 7.2C19.5 16.4 12 21 12 21z',
+  bolt: 'M13.5 1.5L4 13.5h6.5L9 22.5l10-12.5h-6.6z',
+  note: 'M9 3v11.2A3.8 3.8 0 1 0 11 17.5V8h6V3z',
+  sparkle:
+    'M12 1.5c.9 5.2 3.3 7.6 8.5 8.5-5.2.9-7.6 3.3-8.5 8.5-.9-5.2-3.3-7.6-8.5-8.5 5.2-.9 7.6-3.3 8.5-8.5zM19 15.5c.4 2.1 1.4 3.1 3.5 3.5-2.1.4-3.1 1.4-3.5 3.5-.4-2.1-1.4-3.1-3.5-3.5 2.1-.4 3.1-1.4 3.5-3.5z',
+  flower:
+    'M12 8.5a3.2 3.2 0 1 1 0 0zm0-6.5a3.6 3.6 0 0 1 3.4 4.8 3.6 3.6 0 0 1 4.6 4.4 3.6 3.6 0 0 1-1.5 6.6A3.6 3.6 0 0 1 13 21a3.6 3.6 0 0 1-2 0 3.6 3.6 0 0 1-5.5-3.2A3.6 3.6 0 0 1 4 11.2a3.6 3.6 0 0 1 4.6-4.4A3.6 3.6 0 0 1 12 2z',
+  smile:
+    'M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-3.5 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm7 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zM7 14c1 2.4 2.8 3.6 5 3.6s4-1.2 5-3.6z',
+  moon: 'M14.5 2A9.5 9.5 0 1 0 22 16.1 8 8 0 0 1 14.5 2z',
+  flame: 'M12 1.5c1 3.5 5.5 6 5.5 11a5.5 5.5 0 0 1-11 0c0-2.4 1.2-4 2.5-5.2.1 1.9 1 3.2 2.2 3.7-.6-3.4.2-6.6.8-9.5z',
+  crown: 'M3 7l4.5 4L12 4l4.5 7L21 7l-2 11H5zm2 13h14v2H5z',
+  cherry:
+    'M7.5 13a4 4 0 1 1 0 8 4 4 0 0 1 0-8zm9-1a4 4 0 1 1 0 8 4 4 0 0 1 0-8zM17 2c-4.5 1-7.5 4.5-9 11h1.5c1.2-4.6 3.4-7.6 6.5-9.2L16 12h1.5L17.5 3z',
+  peace:
+    'M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 2.1a8 8 0 0 0-5.7 12.3L11 11zm2 0V11l5.7 5.4A8 8 0 0 0 13 4.1zM11 13.8l-4.4 4.1A8 8 0 0 0 11 19.9zm2 0v6.1a8 8 0 0 0 4.4-2z',
+};

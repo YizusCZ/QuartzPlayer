@@ -1,8 +1,47 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 992239b..5a68764 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -270,6 +270,11 @@ class AudioModule : Module() {
+       AudioPreloadManager.preload(uri, factory)
+     }
+ 
++    // Quartz patch: fetches the start of a stream into the disk cache (the next song).
++    Function("precacheStream") { url: String ->
++      QuartzCache.precache(context, url, OkHttpDataSource.Factory(httpClient))
++    }
++
+     AsyncFunction("clearPreloadedSource") Coroutine { source: AudioSource ->
+       val uri = source.uri ?: return@Coroutine
+       AudioPreloadManager.clearSource(uri)
+@@ -881,11 +886,13 @@ class AudioModule : Module() {
+   }
+ 
+   private fun httpDataSourceFactory(headers: Map<String, String>?): DataSource.Factory {
+-    return OkHttpDataSource.Factory(httpClient).apply {
++    val upstream = OkHttpDataSource.Factory(httpClient).apply {
+       headers?.let { headers ->
+         setDefaultRequestProperties(headers)
+       }
+     }
++    // Quartz patch: streamed songs go through the disk cache.
++    return QuartzCache.factory(context, upstream)
+   }
+ 
+   private fun isRawResource(uri: Uri): Boolean =
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index c76a9fd..2101a67 100644
+index c76a9fd..6db8fc8 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-@@ -24,6 +24,7 @@ import java.lang.ref.WeakReference
+@@ -12,7 +12,6 @@ import androidx.media3.common.PlaybackException
+ import androidx.media3.common.PlaybackParameters
+ import androidx.media3.common.Player
+ import androidx.media3.common.util.UnstableApi
+-import androidx.media3.exoplayer.DefaultLoadControl
+ import androidx.media3.exoplayer.ExoPlayer
+ import androidx.media3.exoplayer.source.MediaSource
+ import androidx.media3.session.MediaSession
+@@ -24,6 +23,7 @@ import java.lang.ref.WeakReference
  
  private const val PLAYBACK_STATUS_UPDATE = "playbackStatusUpdate"
  private const val AUDIO_SAMPLE_UPDATE = "audioSampleUpdate"
@@ -10,7 +49,7 @@ index c76a9fd..2101a67 100644
  private const val SEEK_JUMP_INTERVAL_MS: Long = 10_000
  
  @UnstableApi
-@@ -34,7 +35,8 @@ class AudioPlayer(
+@@ -34,25 +34,14 @@ class AudioPlayer(
    updateInterval: Double,
    bufferDurationMs: Long = 0
  ) : BaseAudioPlayer(
@@ -20,7 +59,27 @@ index c76a9fd..2101a67 100644
      .setLooper(context.mainLooper)
      .setAudioAttributes(AudioAttributes.DEFAULT, false)
      .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
-@@ -97,6 +99,11 @@ class AudioPlayer(
+     .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
+-    .apply {
+-      if (bufferDurationMs > 0) {
+-        setLoadControl(
+-          DefaultLoadControl.Builder()
+-            .setBufferDurationsMs(
+-              DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
+-              bufferDurationMs.toInt().coerceAtLeast(DefaultLoadControl.DEFAULT_MIN_BUFFER_MS),
+-              DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+-              DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+-            )
+-            .build()
+-        )
+-      }
+-    }
++    // Quartz patch: buffering tuned for music (QuartzCache.loadControl).
++    .setLoadControl(QuartzCache.loadControl(bufferDurationMs.toInt()))
+     .build(),
+   appContext = appContext,
+   updateInterval = updateInterval,
+@@ -97,6 +86,11 @@ class AudioPlayer(
      startUpdating()
    }
  
@@ -33,21 +92,23 @@ index c76a9fd..2101a67 100644
      if (active) {
        this.metadata = metadata
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
-index 86880d9..c8b183e 100644
+index 86880d9..d2953b3 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecords.kt
-@@ -55,7 +55,9 @@ class Metadata(
+@@ -55,7 +55,11 @@ class Metadata(
    @Field val title: String?,
    @Field val artist: String?,
    @Field val albumTitle: String?,
 -  @Field val artworkUrl: URL?
 +  @Field val artworkUrl: URL?,
 +  // Quartz patch: shows a heart button in the notification; null hides it.
-+  @Field val isFavorite: Boolean? = null
++  @Field val isFavorite: Boolean? = null,
++  // Quartz patch: track length for the notification's seek bar (it stays at 0:00 without it).
++  @Field val durationMs: Double? = null
  ) : Record
  
  enum class AndroidOutputFormat(val value: String) : Enumerable {
-@@ -110,7 +112,10 @@ enum class AndroidAudioEncoder(val value: String) : Enumerable {
+@@ -110,7 +114,10 @@ enum class AndroidAudioEncoder(val value: String) : Enumerable {
  class AudioLockScreenOptions(
    @Field val showSeekForward: Boolean,
    @Field val showSeekBackward: Boolean,
@@ -59,12 +120,133 @@ index 86880d9..c8b183e 100644
  ) : Record
  
  enum class InterruptionMode(val value: String) : Enumerable {
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt
+new file mode 100644
+index 0000000..6b5ba72
+--- /dev/null
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt
+@@ -0,0 +1,115 @@
++package expo.modules.audio
++
++import android.content.Context
++import android.net.Uri
++import androidx.media3.common.util.UnstableApi
++import androidx.media3.database.StandaloneDatabaseProvider
++import androidx.media3.datasource.DataSource
++import androidx.media3.datasource.DataSpec
++import androidx.media3.datasource.cache.CacheDataSource
++import androidx.media3.datasource.cache.CacheKeyFactory
++import androidx.media3.datasource.cache.CacheWriter
++import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
++import androidx.media3.datasource.cache.SimpleCache
++import androidx.media3.exoplayer.DefaultLoadControl
++import androidx.media3.exoplayer.LoadControl
++import java.io.File
++import java.util.concurrent.Executors
++import java.util.concurrent.TimeUnit
++
++/**
++ * Quartz patch: playback buffering.
++ *
++ *  - A disk cache (LRU, 256 MB) under every streamed song: a song heard again,
++ *    a seek back, or rejoining a room reads from disk instead of the network.
++ *    YouTube stream URLs are signed and change each time, so the cache key is
++ *    the stream itself (video, format, length), not the URL.
++ *  - `precache` fetches the first seconds of the next song into that cache
++ *    a few seconds into the current one, so the next one starts instantly.
++ *  - A load control tuned for music: starts after half a second of audio,
++ *    keeps up to three minutes ahead and the last 15 s behind (small seeks
++ *    back never hit the network).
++ */
++@UnstableApi
++object QuartzCache {
++  private const val MAX_BYTES = 256L * 1024 * 1024
++  /** About 30 s of a 256 kbps stream. */
++  private const val PRECACHE_BYTES = 1L * 1024 * 1024
++
++  @Volatile
++  private var cache: SimpleCache? = null
++  private val worker =
++    Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "QuartzPrecache").apply { isDaemon = true } }
++  /** Waits this long so the current song's own start gets the bandwidth first. */
++  private const val PRECACHE_DELAY_S = 6L
++  private var precaching: CacheWriter? = null
++  private var precachingKey: String? = null
++
++  private fun cacheOf(context: Context): SimpleCache =
++    cache ?: synchronized(this) {
++      cache ?: SimpleCache(
++        File(context.cacheDir, "quartz-audio"),
++        LeastRecentlyUsedCacheEvictor(MAX_BYTES),
++        StandaloneDatabaseProvider(context)
++      ).also { cache = it }
++    }
++
++  /** googlevideo URLs: `id` (the stream), `itag` (the format), `clen` (its size) identify the bytes. */
++  val keyFactory = CacheKeyFactory { spec -> keyFor(spec.uri) ?: spec.key ?: spec.uri.toString() }
++
++  private fun keyFor(uri: Uri): String? {
++    if (uri.host?.endsWith("googlevideo.com") != true) return null
++    val id = uri.getQueryParameter("id") ?: return null
++    val itag = uri.getQueryParameter("itag") ?: return null
++    return "yt:$id:$itag:${uri.getQueryParameter("clen") ?: ""}"
++  }
++
++  fun factory(context: Context, upstream: DataSource.Factory): DataSource.Factory =
++    CacheDataSource.Factory()
++      .setCache(cacheOf(context))
++      .setUpstreamDataSourceFactory(upstream)
++      .setCacheKeyFactory(keyFactory)
++      .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
++
++  /** Warms the cache with the start of `url` (one at a time; a newer request replaces the last). */
++  fun precache(context: Context, url: String, upstream: DataSource.Factory) {
++    val uri = Uri.parse(url)
++    val key = keyFor(uri) ?: return
++    synchronized(this) {
++      if (precachingKey == key) return
++      precaching?.cancel()
++      precachingKey = key
++    }
++    val source = factory(context, upstream).createDataSource() as CacheDataSource
++    val spec = DataSpec.Builder().setUri(uri).setLength(PRECACHE_BYTES).setKey(key).build()
++    val writer = CacheWriter(source, spec, null, null)
++    synchronized(this) { precaching = writer }
++    worker.schedule({
++      try {
++        writer.cache()
++      } catch (_: Throwable) {
++        // cancelled, offline, or the URL expired: the song just loads normally
++      } finally {
++        synchronized(this) {
++          if (precaching === writer) {
++            precaching = null
++            precachingKey = null
++          }
++        }
++      }
++    }, PRECACHE_DELAY_S, TimeUnit.SECONDS)
++  }
++
++  fun loadControl(maxBufferMs: Int): LoadControl =
++    DefaultLoadControl.Builder()
++      .setBufferDurationsMs(
++        30_000,
++        maxOf(maxBufferMs, 180_000),
++        500,
++        1_500
++      )
++      .setTargetBufferBytes(48 * 1024 * 1024)
++      .setPrioritizeTimeOverSizeThresholds(true)
++      .setBackBuffer(15_000, true)
++      .build()
++}
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt
 new file mode 100644
-index 0000000..9f4454e
+index 0000000..222e3c4
 --- /dev/null
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,420 @@
 +package expo.modules.audio
 +
 +import android.content.Context
@@ -388,6 +570,15 @@ index 0000000..9f4454e
 +    if (wantFilter != 0 && (filterMode <= 0 || mFilter < 0.002f)) setFilter(wantFilter)
 +    val tFilter = if (wantFilter != 0 && wantFilter == filterMode) 1f else 0f
 +
++    // Fast path: nothing on and nothing still fading out → copy the block as is.
++    val idle = tReverb == 0f && tEcho == 0f && t8d == 0f && tBass == 0f && tKaraoke == 0f && wantFilter == 0
++    if (idle && mReverb < 0.001f && mEcho < 0.001f && m8d < 0.001f && mBass < 0.001f && mFilter < 0.001f && mKaraoke < 0.001f) {
++      mReverb = 0f; mEcho = 0f; m8d = 0f; mBass = 0f; mFilter = 0f; mKaraoke = 0f
++      out.put(src)
++      out.flip()
++      return
++    }
++
 +    val k = 1f - Math.exp(-1.0 / (0.04 * sr)).toFloat() // ~40 ms glide
 +    val step = 2 * PI * 0.11 / sr // 8D: one turn every ~9 s
 +    val rev = reverb
@@ -477,7 +668,7 @@ index 0000000..9f4454e
 +  }
 +}
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
-index 196a5d5..db34ced 100644
+index 196a5d5..e580bc1 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 @@ -90,6 +90,8 @@ class AudioControlsService : MediaSessionService() {
@@ -677,7 +868,7 @@ index 196a5d5..db34ced 100644
            .build()
  
          // Replace the basic media session with a session connected to our playback service.
-@@ -402,6 +517,8 @@ class AudioControlsService : MediaSessionService() {
+@@ -402,12 +517,20 @@ class AudioControlsService : MediaSessionService() {
      }
      currentMetadata = metadata
      sessionMetadataPlayer?.updateMetadata(metadata)
@@ -686,7 +877,20 @@ index 196a5d5..db34ced 100644
      currentMetadata?.artworkUrl?.let {
        loadArtworkFromUrl(it) { bitmap ->
          currentArtwork = bitmap
-@@ -452,7 +569,7 @@ class AudioControlsService : MediaSessionService() {
+         postOrStartForegroundNotification(startInForeground = false)
+       }
+-    } ?: postOrStartForegroundNotification(startInForeground = false)
++    } ?: run {
++      // Quartz patch: a song without a cover must not keep the previous one's picture.
++      artworkLoadJob?.cancel()
++      currentArtworkUrl = null
++      currentArtwork = null
++      postOrStartForegroundNotification(startInForeground = false)
++    }
+   }
+ 
+   private fun clearSessionInternal() {
+@@ -452,7 +575,7 @@ class AudioControlsService : MediaSessionService() {
            updateMetadata(metadata)
          }
          val session = MediaSession.Builder(context, sessionPlayer)
@@ -695,7 +899,7 @@ index 196a5d5..db34ced 100644
            .build()
  
          player.mediaSession.release()
-@@ -558,6 +675,9 @@ class AudioControlsService : MediaSessionService() {
+@@ -558,6 +681,9 @@ class AudioControlsService : MediaSessionService() {
  
      const val ACTION_SEEK_FORWARD = "expo.modules.audio.action.SEEK_FORWARD"
      const val ACTION_SEEK_BACKWARD = "expo.modules.audio.action.SEEK_BACKWARD"
@@ -754,3 +958,16 @@ index 839aaef..216b18e 100644
      }
      return super.onCustomCommand(session, controller, command, args)
    }
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
+index 18203a3..1cb8697 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/MetadataInjectingPlayer.kt
+@@ -45,6 +45,8 @@ internal class MetadataInjectingPlayer(
+       .setAlbumTitle(metadata?.albumTitle)
+       .setArtworkUri(metadata?.artworkUrl?.toString()?.toUri())
+       .setArtworkData(null, null)
++      // Quartz patch: the seek bar needs the length even before the player knows it.
++      .setDurationMs(metadata?.durationMs?.toLong()?.takeIf { it > 0 })
+       .build()
+   }
+ 

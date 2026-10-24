@@ -101,3 +101,6 @@ export async function extractPalette(uri: string): Promise<RGB[]> {
 }
 
 export const fallbackPalette = FALLBACK;
+
+/** The palette if it was already extracted (no await, no flash of default colours). */
+export const cachedPalette = (uri: string | undefined): RGB[] | undefined => (uri ? cache.get(uri) : undefined);

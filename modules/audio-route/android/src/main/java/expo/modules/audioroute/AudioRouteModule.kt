@@ -16,6 +16,11 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import com.facebook.react.bridge.Arguments
+import com.facebook.react.bridge.ReactContext
+import com.facebook.react.bridge.UiThreadUtil
+import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import com.facebook.react.jstasks.HeadlessJsTaskContext
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
@@ -32,6 +37,7 @@ class AudioRouteModule : Module() {
     get() = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
   private val handler = Handler(Looper.getMainLooper())
+  private var keepAliveTask: Int? = null
   private var a2dp: BluetoothA2dp? = null
 
   private val deviceCallback = object : AudioDeviceCallback() {
@@ -77,6 +83,52 @@ class AudioRouteModule : Module() {
 
     Function("cancelSleep") {
       handler.removeCallbacks(sleepRunnable)
+    }
+
+    /**
+     * Opens the system output switcher (the same panel as the quick settings
+     * media card). Android 14+; older versions fall back to Bluetooth settings.
+     */
+    /**
+     * Keeps JS timers running with the app in the background (a listening room
+     * needs its heartbeat and drift checks). React Native stops timers once the
+     * activity pauses unless a headless task is active, so one is held open
+     * for as long as the room lasts.
+     */
+    Function("setKeepAlive") { on: Boolean ->
+      val rc = appContext.reactContext as? ReactContext ?: return@Function false
+      UiThreadUtil.runOnUiThread {
+        val tasks = HeadlessJsTaskContext.getInstance(rc)
+        val running = keepAliveTask
+        if (on && (running == null || !tasks.isTaskRunning(running))) {
+          keepAliveTask = try {
+            tasks.startTask(HeadlessJsTaskConfig(KEEP_ALIVE_TASK, Arguments.createMap(), 0, true))
+          } catch (_: Throwable) {
+            null
+          }
+        } else if (!on && running != null) {
+          if (tasks.isTaskRunning(running)) tasks.finishTask(running)
+          keepAliveTask = null
+        }
+      }
+      true
+    }
+
+    Function("showOutputSwitcher") {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        try {
+          if (android.media.MediaRouter2.getInstance(context).showSystemOutputSwitcher()) return@Function true
+        } catch (_: Throwable) {
+        }
+      }
+      try {
+        val intent = android.content.Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS)
+          .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+        true
+      } catch (_: Throwable) {
+        false
+      }
     }
 
     OnStartObserving {
@@ -201,3 +253,6 @@ class AudioRouteModule : Module() {
     )
   }
 }
+
+/** Registered in JS (src/jam/keepAlive.ts) as a task that never finishes on its own. */
+private const val KEEP_ALIVE_TASK = "QuartzKeepAlive"

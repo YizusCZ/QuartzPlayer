@@ -102,9 +102,9 @@ export async function ensureMotion(t: Track): Promise<void> {
   }
 }
 
-/** The track's motion artwork, fetching it in the background when missing. */
+/** The track's motion artwork, fetching it in the background when missing. Your own cover wins over it. */
 export function useMotionArt(t: Track | undefined): MotionArt | null {
-  const enabled = useSettings((s) => s.motionArt);
+  const enabled = useSettings((s) => s.motionArt) && !t?.customArtwork;
   const key = t ? motionKey(t) : '';
   const art = useMedia((s) => (key ? (s.motion[key]?.art ?? null) : null));
   useEffect(() => {

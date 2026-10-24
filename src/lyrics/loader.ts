@@ -21,7 +21,9 @@ const memory = new Map<string, Lyrics>();
 function cacheFile(track: Track): File {
   const dir = new Directory(Paths.cache, 'lyrics');
   if (!dir.exists) dir.create({ intermediates: true, idempotent: true });
-  return new File(dir, `${hash(`${track.artist}|${track.title}|${track.album}`)}.json`);
+  // Streamed songs use the improved lookup: their old "not found" entries are skipped.
+  const v = track.source === 'youtube' ? 'yt2|' : '';
+  return new File(dir, `${hash(`${v}${track.artist}|${track.title}|${track.album}`)}.json`);
 }
 
 function toLyrics(c: Cached, duration: number): Lyrics {
@@ -74,7 +76,48 @@ function readSidecar(track: Track): string | undefined {
   }
 }
 
+/* ───────── cleaning YouTube-style titles ───────── */
+
+const NOISE =
+  /\s*[([]\s*(?:official|oficial|video|vídeo|videoclip|audio|lyrics?|letra|visuali[sz]er|music video|mv|hd|4k|hq|remaster(?:ed)?(?:\s*\d{4})?|explicit|clean|en vivo|ao vivo|live(?:\s+[^)\]]*)?|en directo|acústico|acoustic|session)[^)\]]*[)\]]/gi;
+const LIVE = /\b(en vivo|ao vivo|live|en directo|concierto|unplugged|session)\b/i;
+const FEAT = /\s+(?:ft\.?|feat\.?|featuring|con|with|x)\s+.+$/i;
+
+function cleanArtist(a: string): string {
+  return a
+    .replace(/\s*-\s*topic$/i, '')
+    .replace(/vevo$/i, '')
+    .replace(/\s*(official|oficial)(\s+(music|channel|canal))?$/i, '')
+    .split(/\s*[,&]\s*|\s+x\s+/)[0]
+    .trim();
+}
+
+/** "Artist - Song (Official Video) ft. X" → { artist, title }. */
+function cleanTitle(title: string, artist: string): { title: string; artist: string } {
+  let t = title
+    .replace(NOISE, '')
+    .replace(/\s*\|\s*.*$/, '')
+    .trim();
+  let a = cleanArtist(artist);
+  const dash = /^(.+?)\s+[-–—]\s+(.+)$/.exec(t);
+  if (dash) {
+    // "Artist - Song": keep the song, and the artist when ours is a channel name.
+    const [, left, right] = dash;
+    if (!a || left.toLowerCase().includes(a.toLowerCase()) || a.toLowerCase().includes(left.toLowerCase())) {
+      a = a || left;
+      t = right;
+    } else if (/vevo|topic|records|music|tv/i.test(artist)) {
+      a = left;
+      t = right;
+    }
+  }
+  t = t.replace(FEAT, '').replace(/["“”]/g, '').trim();
+  return { title: t || title, artist: a || artist };
+}
+
 type LrclibHit = {
+  trackName?: string;
+  artistName?: string;
   syncedLyrics?: string | null;
   plainLyrics?: string | null;
   instrumental?: boolean;
@@ -83,36 +126,82 @@ type LrclibHit = {
 
 async function fetchLrclib(track: Track, signal: AbortSignal): Promise<Cached | null> {
   const headers = { 'User-Agent': 'Quartz Player (https://github.com/)' };
-  const params = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
-  if (track.album) params.set('album_name', track.album);
-  if (track.duration) params.set('duration', String(Math.round(track.duration)));
-  const pick = (h: LrclibHit): Cached => ({
-    at: Date.now(),
-    synced: h.syncedLyrics ?? undefined,
-    plain: h.plainLyrics ?? undefined,
-    instrumental: !!h.instrumental,
-    source: 'lrclib',
-  });
+  const streamed = track.source === 'youtube';
+  const live = LIVE.test(track.title);
+  const clean = cleanTitle(track.title, track.artist);
+  // Music videos run longer than the song (intros, outros): be lenient there.
+  const slack = streamed ? 30 : 8;
 
-  const exact = await fetch(`https://lrclib.net/api/get?${params}`, { headers, signal });
-  if (exact.ok) return pick((await exact.json()) as LrclibHit);
-  if (exact.status !== 404) return null; // server trouble: do not cache a miss
+  const pick = (h: LrclibHit, approx: boolean): Cached => {
+    // A different take (live, or a far-off duration) keeps the words but drops
+    // the timings, which would drift.
+    const offTime = !!track.duration && !!h.duration && Math.abs(h.duration - track.duration) > 8;
+    const keepSynced = !(live || (approx && offTime));
+    return {
+      at: Date.now(),
+      synced: keepSynced ? (h.syncedLyrics ?? undefined) : undefined,
+      plain: h.plainLyrics ?? (keepSynced ? undefined : stripTimes(h.syncedLyrics)),
+      instrumental: !!h.instrumental,
+      source: 'lrclib',
+    };
+  };
 
-  // Fuzzy fallback: best-matching result by duration.
-  const q = new URLSearchParams({ track_name: track.title, artist_name: track.artist });
-  const res = await fetch(`https://lrclib.net/api/search?${q}`, { headers, signal });
-  if (!res.ok) return null;
-  const hits = (await res.json()) as LrclibHit[];
-  const scored = hits
-    .filter((h) => h.syncedLyrics || h.plainLyrics || h.instrumental)
-    .sort(
-      (a, b) =>
-        Number(!!b.syncedLyrics) - Number(!!a.syncedLyrics) ||
-        Math.abs((a.duration ?? 0) - track.duration) - Math.abs((b.duration ?? 0) - track.duration),
-    );
-  const best = scored[0];
-  if (best && (!track.duration || !best.duration || Math.abs(best.duration - track.duration) < 8)) return pick(best);
+  const attempts: { title: string; artist: string; album?: string; duration?: number }[] = [];
+  const seen = new Set<string>();
+  const add = (title: string, artist: string, album?: string, duration?: number) => {
+    const k = `${title}|${artist}|${album ?? ''}|${duration ?? ''}`.toLowerCase();
+    if (!title || seen.has(k)) return;
+    seen.add(k);
+    attempts.push({ title, artist, album, duration });
+  };
+  const realAlbum = !streamed && track.album && track.album !== track.title ? track.album : undefined;
+  if (!live) add(track.title, track.artist, realAlbum, track.duration || undefined);
+  if (!live) add(clean.title, clean.artist, undefined, track.duration || undefined);
+
+  // 1. Exact lookups (artist + title [+ album] [+ duration]).
+  for (const at of attempts) {
+    const params = new URLSearchParams({ track_name: at.title, artist_name: at.artist });
+    if (at.album) params.set('album_name', at.album);
+    if (at.duration) params.set('duration', String(Math.round(at.duration)));
+    const res = await fetch(`https://lrclib.net/api/get?${params}`, { headers, signal });
+    if (res.ok) return pick((await res.json()) as LrclibHit, false);
+    if (res.status !== 404) return null; // server trouble: do not cache a miss
+  }
+
+  // 2. Fuzzy search: cleaned title + artist, then a free-text query.
+  const queries = [
+    new URLSearchParams({ track_name: clean.title, artist_name: clean.artist }),
+    new URLSearchParams({ q: `${clean.artist} ${clean.title}` }),
+    new URLSearchParams({ track_name: track.title, artist_name: track.artist }),
+  ];
+  for (const q of queries) {
+    const res = await fetch(`https://lrclib.net/api/search?${q}`, { headers, signal });
+    if (!res.ok) continue;
+    const hits = ((await res.json()) as LrclibHit[]).filter((h) => h.syncedLyrics || h.plainLyrics || h.instrumental);
+    // The studio version for live takes; otherwise the closest duration, synced first.
+    const scored = hits
+      .filter((h) => !LIVE.test(h.trackName ?? '') || live)
+      .sort(
+        (x, y) =>
+          Number(!!y.syncedLyrics) - Number(!!x.syncedLyrics) ||
+          Math.abs((x.duration ?? 0) - track.duration) - Math.abs((y.duration ?? 0) - track.duration),
+      );
+    const best = scored[0];
+    if (!best) continue;
+    const close = !track.duration || !best.duration || Math.abs(best.duration - track.duration) < slack;
+    if (close || live) return pick(best, true);
+  }
   return { at: Date.now() };
+}
+
+/** "[00:12.34] words" → "words". */
+function stripTimes(lrc: string | null | undefined): string | undefined {
+  if (!lrc) return undefined;
+  return lrc
+    .split('\n')
+    .map((l) => l.replace(/\[[^\]]*\]/g, '').trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 export async function loadLyrics(track: Track, signal: AbortSignal): Promise<Lyrics> {
@@ -124,10 +213,12 @@ export async function loadLyrics(track: Track, signal: AbortSignal): Promise<Lyr
     return l;
   };
 
-  const embedded = readEmbedded(track);
-  if (embedded) return done(toLyrics(fromText(embedded, 'embedded'), track.duration));
-  const sidecar = readSidecar(track);
-  if (sidecar) return done(toLyrics(fromText(sidecar, 'file'), track.duration));
+  if (track.source !== 'youtube') {
+    const embedded = readEmbedded(track);
+    if (embedded) return done(toLyrics(fromText(embedded, 'embedded'), track.duration));
+    const sidecar = readSidecar(track);
+    if (sidecar) return done(toLyrics(fromText(sidecar, 'file'), track.duration));
+  }
 
   const file = cacheFile(track);
   let cached: Cached | null = null;

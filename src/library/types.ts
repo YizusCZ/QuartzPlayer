@@ -28,7 +28,27 @@ export type Track = {
   addedAt: number;
   /** File modification time used to skip re-parsing unchanged files. */
   mtime: number;
-  source: 'device' | 'imported';
+  /** 'youtube': streamed, never stored on the phone (uri is "yt:<videoId>"). */
+  source: 'device' | 'imported' | 'youtube';
+  /** Your own cover for this song (Documents/covers); `artwork` shows it. Never sent to Discord. */
+  customArtwork?: string;
+  /** The cover the file / service had before you changed it, to restore it. */
+  originalArtwork?: string;
+  /** YouTube songs with a real music video (not just the still cover). */
+  video?: boolean;
+  /** Set for songs downloaded from Música libre: where they came from and their licence. */
+  origin?: TrackOrigin;
+};
+
+export type TrackOrigin = {
+  service: 'jamendo' | 'archive';
+  /** Short licence name, e.g. "CC BY-SA 3.0". */
+  license: string;
+  licenseUrl?: string;
+  /** The work's page on the service, for attribution. */
+  pageUrl: string;
+  /** Catalog key ("jamendo:123"), to show it as downloaded in Música libre. */
+  key?: string;
 };
 
 export const LOSSLESS: Codec[] = ['FLAC', 'ALAC', 'WAV', 'AIFF'];

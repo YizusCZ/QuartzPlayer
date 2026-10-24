@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Escuchar juntos en Quartz</title>
+    <meta name="description" content="Te invitaron a una sala de Quartz: escuchen la misma música al mismo tiempo." />
+    <meta property="og:title" content="Escuchar juntos en Quartz" />
+    <meta property="og:description" content="Te invitaron a una sala de Quartz: escuchen la misma música al mismo tiempo." />
+    <meta name="theme-color" content="#0B0B0C" />
+    <link rel="icon" href="logo.png" />
+    <style>
+      :root {
+        --bg: #0b0b0c;
+        --surface: #161618;
+        --surface2: #1f1f22;
+        --text: #f4f1ec;
+        --dim: #a9a6a1;
+        --accent: #f08a24;
+        --on-accent: #1a0f04;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--text); }
+      body {
+        font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px 16px;
+      }
+      main { width: 100%; max-width: 420px; text-align: center; }
+      .glow {
+        position: relative;
+        width: 240px;
+        height: 240px;
+        margin: 0 auto 8px;
+        display: grid;
+        place-items: center;
+      }
+      .glow::before {
+        content: '';
+        position: absolute;
+        inset: 10px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(240, 138, 36, 0.28), rgba(240, 138, 36, 0) 70%);
+      }
+      .glow img { position: relative; width: 220px; height: auto; }
+      .brand { display: inline-flex; align-items: center; gap: 8px; color: var(--dim); font-size: 14px; }
+      .brand img { width: 22px; height: 22px; border-radius: 6px; }
+      h1 { font-size: 26px; line-height: 1.2; margin: 14px 0 8px; }
+      p { color: var(--dim); font-size: 15px; line-height: 1.5; margin: 0 0 20px; }
+      .code {
+        display: inline-flex;
+        gap: 6px;
+        margin: 0 0 22px;
+      }
+      .code span {
+        width: 40px;
+        height: 50px;
+        border-radius: 12px;
+        background: var(--surface2);
+        display: grid;
+        place-items: center;
+        font: 700 22px ui-monospace, 'SF Mono', Menlo, monospace;
+        letter-spacing: 0;
+      }
+      .btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        padding: 15px 20px;
+        border-radius: 999px;
+        border: 0;
+        font: 600 16px system-ui, sans-serif;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .primary { background: var(--accent); color: var(--on-accent); }
+      .secondary { background: var(--surface2); color: var(--text); margin-top: 10px; }
+      .note { font-size: 13px; margin-top: 18px; margin-bottom: 0; }
+      .steps {
+        text-align: left;
+        background: var(--surface);
+        border-radius: 18px;
+        padding: 14px 16px;
+        margin: 18px 0 0;
+        color: var(--dim);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+      .steps b { color: var(--text); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand"><img src="logo.png" alt="" />Quartz</div>
+
+      <!-- opening the app -->
+      <section id="opening">
+        <div class="glow"><img src="cat.png" alt="Gato con audífonos" /></div>
+        <h1>Abriendo la sala…</h1>
+        <p>Si Quartz está instalado, entrarás en un momento.</p>
+        <div class="code" id="code-a"></div>
+        <a class="btn primary" id="open">Abrir en Quartz</a>
+      </section>
+
+      <!-- Quartz isn't installed -->
+      <section id="missing" hidden>
+        <div class="glow"><img src="cat.png" alt="Gato con audífonos" /></div>
+        <h1>Necesitas Quartz para unirte</h1>
+        <p>
+          Te invitaron a escuchar juntos: la misma música, al mismo segundo, con chat y reacciones. Descarga Quartz
+          para entrar a la sala.
+        </p>
+        <div class="code" id="code-b"></div>
+        <a class="btn primary" id="download" href="https://github.com/YizusCZ/QuartzPlayer/releases/latest">
+          Descargar Quartz
+        </a>
+        <a class="btn secondary" id="retry">Ya lo tengo, abrir la sala</a>
+        <div class="steps">
+          <b>Cómo entrar:</b> instala Quartz, ábrelo, ve a <b>Salas</b> y escribe el código de arriba en
+          <b>Entrar a una sala</b>.
+        </div>
+        <p class="note">Quartz es para Android.</p>
+      </section>
+
+      <!-- no code in the link -->
+      <section id="nocode" hidden>
+        <div class="glow"><img src="cat.png" alt="Gato con audífonos" /></div>
+        <h1>Este enlace no tiene sala</h1>
+        <p>Pide a quien te invitó que comparta el enlace otra vez, o escribe su código en Quartz.</p>
+        <a class="btn primary" href="https://github.com/YizusCZ/QuartzPlayer/releases/latest">Descargar Quartz</a>
+      </section>
+    </main>
+
+    <script>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var code = (params.get('code') || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+        var show = function (id) {
+          ['opening', 'missing', 'nocode'].forEach(function (s) {
+            document.getElementById(s).hidden = s !== id;
+          });
+        };
+        if (code.length !== 6) return show('nocode');
+
+        ['code-a', 'code-b'].forEach(function (id) {
+          var box = document.getElementById(id);
+          code.split('').forEach(function (c) {
+            var span = document.createElement('span');
+            span.textContent = c;
+            box.appendChild(span);
+          });
+        });
+
+        var android = /android/i.test(navigator.userAgent);
+        var here = location.origin + location.pathname;
+        // Android: an intent link opens Quartz, or comes back here with missing=1 when it isn't installed.
+        var fallback = here + '?code=' + code + '&missing=1';
+        var link = android
+          ? 'intent://jam?code=' + code + '#Intent;scheme=quartz;package=com.quartz.player;S.browser_fallback_url=' +
+            encodeURIComponent(fallback) + ';end'
+          : 'quartz://jam?code=' + code;
+        document.getElementById('open').href = link;
+        document.getElementById('retry').href = link;
+
+        if (params.get('missing') === '1' || !android) return show('missing');
+
+        show('opening');
+        location.href = link;
+        // Still here after a moment: the app didn't open.
+        var timer = setTimeout(function () {
+          show('missing');
+        }, 2500);
+        document.addEventListener('visibilitychange', function () {
+          if (document.hidden) clearTimeout(timer);
+        });
+      })();
+    </script>
+  </body>
+</html>

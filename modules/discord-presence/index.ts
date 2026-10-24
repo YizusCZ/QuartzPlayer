@@ -16,6 +16,9 @@ export type DiscordPresence = {
   /** Unix epoch, ms. Start + end draw a progress bar. */
   startMs?: number;
   endMs?: number;
+  /** A link button others see under your status (Discord allows two). */
+  buttonLabel?: string;
+  buttonUrl?: string;
 };
 
 export type DiscordResult = { ok: boolean; message: string };

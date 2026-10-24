@@ -1,6 +1,6 @@
 /**
  * Video visualizer and animated covers.
- *  - Your own video (per track, or one for every track) always wins. When its
+ *  - Your own video or GIF (per track, or one for every track) always wins. When a video's
  *    length matches the song's (a music video), it follows the playback
  *    position; otherwise it loops.
  *  - Otherwise the Apple Music motion artwork: the tall loop full screen,
@@ -9,7 +9,7 @@
  * Videos are always muted and mix with the music, so they never take audio
  * focus away from the player.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,8 +21,10 @@ import { Artwork } from '@/components/ui/Artwork';
 import { Icon } from '@/components/ui/Icon';
 import { Txt } from '@/components/ui/Txt';
 import type { Track } from '@/library/types';
+import { isImageBackground } from '@/lib/userMedia';
 import { useMotionArt } from '@/media/motion';
 import { useMedia } from '@/store/media';
+import { YouTubeModule } from '../../../modules/youtube';
 import { usePlayer } from '@/store/player';
 import { colors, radius as radii } from '@/theme';
 
@@ -30,13 +32,38 @@ import { colors, radius as radii } from '@/theme';
 const SYNC_SLACK = 12;
 
 /** Keeps your own music video on the song's clock (position and speed). */
+/**
+ * Keeps a muted video on the song's clock. Seeking a streamed video means a
+ * rebuffer (a visible stall), so small drift is absorbed by nudging the speed
+ * a few percent; only a big jump (a seek in the song) seeks the video.
+ */
 function followSong(player: VideoPlayer, songDuration: number) {
   const d = player.duration;
   if (!(d > 0) || Math.abs(d - songDuration) > SYNC_SLACK) return;
+  // While it buffers its clock stands still: judging drift now would only add seeks.
+  if (player.status === 'loading') return;
   const target = Math.min(d - 0.05, playbackTime());
-  if (Math.abs(player.currentTime - target) > 0.6) player.currentTime = target;
-  const rate = transport.value.rate || 1;
-  if (Math.abs(player.playbackRate - rate) > 0.01) player.playbackRate = rate;
+  const drift = target - player.currentTime;
+  // A room nudges the audio a few percent to stay with its host: the video
+  // ignores those nudges (its own dead band covers them) and only follows
+  // real speed changes like Nightcore or Slowed.
+  const audioRate = transport.value.rate || 1;
+  const rate = Math.abs(audioRate - 1) < 0.09 ? 1 : audioRate;
+  if (Math.abs(drift) > 3) {
+    player.currentTime = target;
+    player.playbackRate = rate;
+    return;
+  }
+  // Every speed change makes the decoder re-time its frames: change it rarely
+  // and gently, with a dead band so it settles at exactly the song's speed.
+  const nudge = Math.abs(drift) < 0.35 ? 1 : drift > 0 ? 1.03 : 0.97;
+  const want = rate * nudge;
+  if (Math.abs(player.playbackRate - want) > 0.01) player.playbackRate = want;
+}
+
+/** Where a synced video should be right now (the song's position), or null for loops. */
+function startAt(songDuration: number | undefined) {
+  return songDuration != null ? Math.max(0, playbackTime()) : null;
 }
 
 /*
@@ -44,18 +71,26 @@ function followSong(player: VideoPlayer, songDuration: number) {
  * (or flipping between Carátula and Vídeo) re-attaches the same, already
  * buffered player instead of loading the video again. Only a few are kept.
  */
-const POOL_SIZE = 3;
+// Each kept player holds a hardware decoder: two is plenty and spares memory.
+const POOL_SIZE = 2;
 const pool = new Map<string, { player: VideoPlayer; views: number }>();
 
-function acquire(uri: string): VideoPlayer {
+function acquire(uri: string, at: number | null): VideoPlayer {
   const hit = pool.get(uri);
   if (hit) {
     hit.views += 1;
     pool.delete(uri); // re-insert: most recently used last
     pool.set(uri, hit);
+    // Back after a while: jump to the song now, before it starts drawing.
+    if (at != null && Math.abs(hit.player.currentTime - at) > 3) hit.player.currentTime = at;
     return hit.player;
   }
   const player = createVideoPlayer({ uri });
+  // A bigger cushion against network hiccups, but start as soon as a little is in.
+  player.bufferOptions = { preferredForwardBufferDuration: 30, minBufferForPlayback: 1.5 };
+  // Synced videos load from the song's current second, not from 0 and then seek
+  // (switching to the video minutes into a song used to buffer twice).
+  if (at != null && at > 1) player.currentTime = at;
   player.muted = true;
   player.loop = true;
   player.audioMixingMode = 'mixWithOthers';
@@ -84,15 +119,22 @@ function LoopVideo({
   fit,
   songDuration,
   onReady,
+  fullScreen,
 }: {
   uri: string;
   fit: VideoContentFit;
   /** Set for your own videos: sync to the song when the lengths match. */
   songDuration?: number;
   onReady?: (ready: boolean) => void;
+  /**
+   * Full screen: a SurfaceView, which the GPU composes directly (smoother, no
+   * per-frame copy). It ignores opacity and rounded corners, so the caller
+   * covers it until the first frame and small rounded covers keep a TextureView.
+   */
+  fullScreen?: boolean;
 }) {
   const playing = usePlayer((s) => s.playing);
-  const [player] = useState(() => acquire(uri));
+  const [player] = useState(() => acquire(uri, startAt(songDuration)));
   useEffect(() => () => release(uri), [uri]);
 
   // Shown only once a frame is on the surface: no black flash while it attaches.
@@ -100,7 +142,7 @@ function LoopVideo({
   const opacity = useSharedValue(0);
   const fade = useAnimatedStyle(() => ({ opacity: opacity.value }));
   const onFirstFrame = () => {
-    opacity.set(withTiming(1, { duration: 220 }));
+    opacity.set(fullScreen ? 1 : withTiming(1, { duration: 220 }));
     setShown(true);
   };
   useEffect(() => onReady?.(shown), [shown, onReady]);
@@ -117,7 +159,7 @@ function LoopVideo({
     if (!follows || !shown) return;
     const tick = () => followSong(player, songDuration ?? 0);
     tick();
-    const t = setInterval(tick, 1000);
+    const t = setInterval(tick, 2000);
     return () => clearInterval(t);
   }, [follows, shown, player, songDuration]);
 
@@ -129,10 +171,23 @@ function LoopVideo({
         contentFit={fit}
         nativeControls={false}
         allowsPictureInPicture={false}
-        surfaceType="textureView"
+        surfaceType={fullScreen ? 'surfaceView' : 'textureView'}
         useExoShutter={false}
         onFirstFrameRender={onFirstFrame}
       />
+    </Animated.View>
+  );
+}
+
+function CoverVeil({ hidden, children }: { hidden: boolean; children: ReactNode }) {
+  const opacity = useSharedValue(1);
+  useEffect(() => {
+    opacity.set(withTiming(hidden ? 0 : 1, { duration: hidden ? 320 : 0 }));
+  }, [hidden, opacity]);
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  return (
+    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, style]}>
+      {children}
     </Animated.View>
   );
 }
@@ -172,24 +227,107 @@ export function useTrackVideo(track: Track | undefined): { own: string | null } 
 
 type StageProps = { track: Track; width: number; height: number; onAdd: () => void };
 
+/** Music-video URLs per YouTube id (they expire after a few hours). */
+const ytVideos = new Map<string, { url: string; at: number }>();
+const YT_VIDEO_TTL = 4 * 3600_000;
+
+/** Resolves a song's own music video ahead of time, so switching to Vídeo starts at once. */
+export function prefetchYouTubeVideo(track: Track | undefined) {
+  if (!track || track.source !== 'youtube' || !track.video) return;
+  const id = track.uri.slice(3);
+  const hit = ytVideos.get(id);
+  if (hit && Date.now() - hit.at < YT_VIDEO_TTL) return;
+  YouTubeModule.resolveVideo(id)
+    .then((v) => ytVideos.set(id, { url: v.url, at: Date.now() }))
+    .catch(() => {});
+}
+
+/** The YouTube music video of a streamed song, when it has one. */
+function useYouTubeVideo(track: Track): string | null {
+  const id = track.source === 'youtube' ? track.uri.slice(3) : null;
+  const [loaded, setLoaded] = useState<{ id: string; url: string | null } | null>(null);
+  useEffect(() => {
+    if (!id) return;
+    const hit = ytVideos.get(id);
+    if (hit && Date.now() - hit.at < YT_VIDEO_TTL) return;
+    let alive = true;
+    // Art-track songs have no picture of their own: look for the official video.
+    const source = track.video ? Promise.resolve(id) : findMusicVideo(track);
+    source
+      .then((vid) => (vid ? YouTubeModule.resolveVideo(vid) : Promise.reject(new Error('sin videoclip'))))
+      .then((v) => {
+        ytVideos.set(id, { url: v.url, at: Date.now() });
+        if (alive) setLoaded({ id, url: v.url });
+      })
+      .catch(() => alive && setLoaded({ id, url: null }));
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one lookup per song
+  }, [id]);
+  if (!id) return null;
+  const cached = ytVideos.get(id);
+  if (cached) return cached.url;
+  return loaded?.id === id ? loaded.url : null;
+}
+
+const norm = (s: string) =>
+  s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s*[([].*?[)\]]\s*/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/** The music video matching a song (same title, and its artist in the video's title or channel). */
+async function findMusicVideo(track: Track): Promise<string | null> {
+  const results = await YouTubeModule.search(`${track.artist} ${track.title}`, 'music_videos').catch(() => []);
+  const title = norm(track.title);
+  const artist = norm(track.artist);
+  const hit = results.find((r) => {
+    if (r.type !== 'song') return false;
+    const t = norm(r.title);
+    return t.includes(title) && (t.includes(artist) || norm(r.artist ?? '').includes(artist) || title.length > 6);
+  });
+  return hit && hit.type === 'song' ? hit.videoId : null;
+}
+
 export function VideoStage({ track, width, height, onAdd }: StageProps) {
   const { own } = useTrackVideo(track);
+  const ytVideo = useYouTubeVideo(track);
   const motion = useMotionArt(track);
-  const uri = own ?? motion?.tall ?? motion?.square ?? null;
+  // Your video, then the song's music video (YouTube), then the motion cover.
+  const still = !!own && isImageBackground(own);
+  const uri = own ?? ytVideo ?? motion?.tall ?? motion?.square ?? null;
+  const synced = !still && !!(own || ytVideo);
   const [ready, setReady] = useState(false);
 
   return (
     <View style={{ width, height, backgroundColor: '#000' }}>
-      {!uri || !ready ? <DriftingCover track={track} width={width} height={height} /> : null}
-      {uri ? (
+      {still && own ? (
+        <Image
+          source={{ uri: own }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          autoplay
+          transition={200}
+          onDisplay={() => setReady(true)}
+        />
+      ) : uri ? (
         <LoopVideo
           key={uri}
           uri={uri}
           fit={own || motion?.tall ? 'cover' : 'contain'}
-          songDuration={own ? track.duration : undefined}
+          songDuration={synced ? track.duration : undefined}
           onReady={setReady}
+          fullScreen
         />
       ) : null}
+      {/* Over the video until its first frame, then fades away (the video surface can't fade itself). */}
+      <CoverVeil key={uri ?? 'none'} hidden={!!uri && ready}>
+        <DriftingCover track={track} width={width} height={height} />
+      </CoverVeil>
       {/* keeps the floating controls readable over bright videos */}
       <LinearGradient
         pointerEvents="none"
@@ -199,9 +337,14 @@ export function VideoStage({ track, width, height, onAdd }: StageProps) {
       />
       {!uri ? (
         <View style={[StyleSheet.absoluteFill, styles.center]} pointerEvents="box-none">
-          <Pressable onPress={onAdd} style={styles.add} accessibilityRole="button" accessibilityLabel="Añadir un vídeo">
+          <Pressable
+            onPress={onAdd}
+            style={styles.add}
+            accessibilityRole="button"
+            accessibilityLabel="Añadir un vídeo o un GIF"
+          >
             <Icon name="movie-plus-outline" size={22} color={colors.text} />
-            <Txt variant="bodyStrong">Añadir un vídeo</Txt>
+            <Txt variant="bodyStrong">Añadir vídeo o GIF</Txt>
           </Pressable>
         </View>
       ) : null}

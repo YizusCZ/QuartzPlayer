@@ -12,8 +12,9 @@ export function applyEq(immediate = false) {
   const run = () => {
     const player = getPlayer();
     if (!player || !eqSupported) return;
-    const { enabled, preamp, gains } = useEq.getState();
-    void AudioDsp.setEqualizer(player, enabled, preamp, gains);
+    const { enabled, preamp, gains, balance, leveling, autoGain } = useEq.getState();
+    const gain = autoGain ? Math.min(preamp, -Math.max(0, ...gains)) : preamp;
+    void AudioDsp.setEqualizer(player, enabled, gain, gains, balance, leveling);
   };
   if (immediate) run();
   else pending = setTimeout(run, 40);

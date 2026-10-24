@@ -12,7 +12,7 @@ import { StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Canvas, Fill, Shader, Skia } from '@shopify/react-native-skia';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useDerivedValue, useFrameCallback, useSharedValue, withTiming } from 'react-native-reanimated';
-import { extractPalette, fallbackPalette, type RGB } from '@/lib/palette';
+import { cachedPalette, extractPalette, fallbackPalette, type RGB } from '@/lib/palette';
 
 export const AMBIENT_SKSL = `
 uniform float2 res;
@@ -37,15 +37,22 @@ half4 main(float2 fc) {
   float aspect = res.x / res.y;
   float2 p = float2(fc.x / res.y, fc.y / res.y);
 
-  // Gentle domain warp gives the liquid, folding motion.
-  float2 q = p;
-  q += 0.10 * float2(sin(q.y * 2.3 + t * 0.23), cos(q.x * 2.1 - t * 0.19));
-  q += 0.06 * float2(sin(q.y * 4.1 - t * 0.31), cos(q.x * 3.7 + t * 0.27));
+  // Slow swirl around the centre: the whole field turns, like Apple Music's
+  // rotating, blurred artwork.
+  float2 ctr = float2(aspect * 0.5, 0.5);
+  float ang = t * 0.045 + 0.35 * sin(t * 0.07);
+  float cs = cos(ang);
+  float sn = sin(ang);
+  float2 q = ctr + float2(cs * (p.x - ctr.x) - sn * (p.y - ctr.y), sn * (p.x - ctr.x) + cs * (p.y - ctr.y));
 
-  float2 a = float2(aspect * (0.25 + 0.22 * sin(t * 0.13)), 0.20 + 0.16 * cos(t * 0.11));
-  float2 b = float2(aspect * (0.78 + 0.16 * cos(t * 0.09)), 0.35 + 0.18 * sin(t * 0.15 + 1.7));
-  float2 c = float2(aspect * (0.35 + 0.20 * cos(t * 0.12 + 2.4)), 0.72 + 0.16 * sin(t * 0.10));
-  float2 d = float2(aspect * (0.72 + 0.18 * sin(t * 0.14 + 4.1)), 0.88 + 0.12 * cos(t * 0.13 + 0.6));
+  // Domain warp gives the liquid, folding motion.
+  q += 0.18 * float2(sin(q.y * 2.3 + t * 0.29), cos(q.x * 2.1 - t * 0.23));
+  q += 0.09 * float2(sin(q.y * 4.1 - t * 0.41), cos(q.x * 3.7 + t * 0.37));
+
+  float2 a = float2(aspect * (0.25 + 0.30 * sin(t * 0.17)), 0.22 + 0.24 * cos(t * 0.13));
+  float2 b = float2(aspect * (0.78 + 0.24 * cos(t * 0.12)), 0.35 + 0.26 * sin(t * 0.19 + 1.7));
+  float2 c = float2(aspect * (0.35 + 0.28 * cos(t * 0.15 + 2.4)), 0.70 + 0.24 * sin(t * 0.13));
+  float2 d = float2(aspect * (0.72 + 0.26 * sin(t * 0.18 + 4.1)), 0.86 + 0.20 * cos(t * 0.16 + 0.6));
 
   float w0 = field(q, a, 0.30);
   float w1 = field(q, b, 0.28);
@@ -89,7 +96,11 @@ export function AmbientBackdrop({ uri, dim = 0.28, still }: Props) {
   const { width, height } = useWindowDimensions();
   const w = Math.ceil(width / SCALE);
   const h = Math.ceil(height / SCALE);
-  const [loaded, setLoaded] = useState<{ uri: string; palette: RGB[] } | null>(null);
+  // Start from the cached palette so a remount never flashes the default colours.
+  const [loaded, setLoaded] = useState<{ uri: string; palette: RGB[] } | null>(() => {
+    const p = cachedPalette(uri);
+    return uri && p ? { uri, palette: p } : null;
+  });
   const palette = uri && loaded?.uri === uri ? loaded.palette : fallbackPalette;
   // Shader time (ms), advanced at FRAME_MS steps; the Canvas only redraws when it changes.
   const time = useSharedValue(0);
@@ -138,8 +149,8 @@ export function AmbientBackdrop({ uri, dim = 0.28, still }: Props) {
       f[i + 1] + (g[i + 1] - f[i + 1]) * m,
       f[i + 2] + (g[i + 2] - f[i + 2]) * m,
     ];
-    // ×1.6: a touch livelier than a screensaver, still calm.
-    const t = (time.value / 1000) * 1.6;
+    // ×2.6: clearly flowing (Apple Music–like) without becoming busy.
+    const t = (time.value / 1000) * 2.6;
     return { res: [w, h], t, c0: c(0), c1: c(3), c2: c(6), c3: c(9) };
   });
 

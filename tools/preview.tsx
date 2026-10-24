@@ -117,6 +117,41 @@ async function main() {
     console.log('wrote', name);
   }
 
+  // Stickers on a custom shell (what "Crea tu cassette" produces).
+  {
+    const W = 1280;
+    const H = 760;
+    const surface = Sk.makeOffscreenSurface(W, H);
+    const scale = Math.min((W - 80) / CASSETTE_W, (H - 80) / CASSETTE_H);
+    const kinds = ['star', 'heart', 'bolt', 'note', 'sparkle', 'flower', 'smile', 'moon', 'flame', 'crown', 'cherry', 'peace'] as const;
+    const skin = {
+      ...SKINS.vapor,
+      stickers: kinds.map((kind, i) => ({
+        id: kind,
+        kind,
+        x: 110 + (i % 6) * 156,
+        y: i < 6 ? 515 : 590,
+        size: 62,
+        rotate: (i % 3) * 0.25 - 0.25,
+        color: ['#FF5A8A', '#FFD23F', '#3FE0D0', '#9B7BFF', '#FF8A3D', '#7CFFB2'][i % 6],
+      })),
+    };
+    const tree = h(
+      Sk.Group,
+      null,
+      h(Sk.Rect, { x: 0, y: 0, width: W, height: H, color: '#0B0B0C' }),
+      h(
+        Sk.Group,
+        { transform: [{ translateX: W / 2 }, { translateY: H / 2 }, { scale }, { translateX: -CASSETTE_W / 2 }, { translateY: -CASSETTE_H / 2 }] },
+        h(CassetteReels, { skin, px: scale, hubL: [{ rotate: 0.4 }], hubR: [{ rotate: 1.1 }], packL: pack(0.5), packR: pack(0.5) }),
+        h(CassetteBase, { skin, fonts, px: scale, title: 'Mi cassette', artist: 'YizusTC', album: '', caption: '', side: 'A' as const, model: 'QZ 90' }),
+      ),
+    );
+    const image = await Sk.drawOffscreen(surface, tree);
+    writeFileSync('tools/preview-out/landscape-stickers.png', image.encodeToBytes());
+    console.log('wrote landscape-stickers');
+  }
+
   // Playlist covers: every skin, as a contact sheet.
   const ids = Object.keys(SKINS) as (keyof typeof SKINS)[];
   const C = 360;

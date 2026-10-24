@@ -70,6 +70,7 @@ export function LyricsView({ track, width, height }: Props) {
   }, [track, online]);
 
   const big = Math.min(width, height) > 500;
+  const scale = LYRICS_SCALE[useSettings((s) => s.lyricsSize)];
 
   return (
     <View style={{ width, height, overflow: 'hidden' }}>
@@ -80,9 +81,9 @@ export function LyricsView({ track, width, height }: Props) {
           <Txt variant="caption">Buscando la letra…</Txt>
         </View>
       ) : lyrics.kind === 'synced' ? (
-        <Synced key={track.id} lines={lyrics.lines} height={height} big={big} />
+        <Synced key={track.id} lines={lyrics.lines} height={height} big={big} scale={scale} />
       ) : lyrics.kind === 'plain' ? (
-        <Plain key={track.id} text={lyrics.text} height={height} big={big} />
+        <Plain key={track.id} text={lyrics.text} height={height} big={big} scale={scale} />
       ) : lyrics.kind === 'instrumental' ? (
         <View style={styles.center}>
           <Icon name="music-note" size={48} color={colors.accent} />
@@ -99,22 +100,13 @@ export function LyricsView({ track, width, height }: Props) {
           </Txt>
         </View>
       )}
-      {lyrics && lyrics.kind !== 'none' && 'source' in lyrics ? (
-        <Txt variant="mono" style={styles.source}>
-          {lyrics.source === 'lrclib'
-            ? 'LETRA · LRCLIB'
-            : lyrics.source === 'file'
-              ? 'LETRA · ARCHIVO .LRC'
-              : 'LETRA · INCRUSTADA'}
-        </Txt>
-      ) : null}
     </View>
   );
 }
 
 /* ───────── synced ───────── */
 
-function Synced({ lines, height, big }: { lines: LyricLine[]; height: number; big: boolean }) {
+function Synced({ lines, height, big, scale }: { lines: LyricLine[]; height: number; big: boolean; scale: number }) {
   const clock = usePlaybackClock();
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const activeSV = useSharedValue(-1);
@@ -186,6 +178,7 @@ function Synced({ lines, height, big }: { lines: LyricLine[]; height: number; bi
           activeSV={activeSV}
           clock={clock}
           big={big}
+          scale={scale}
           onLayout={onLineLayout}
         />
       ))}
@@ -200,10 +193,20 @@ type RowProps = {
   activeSV: SharedValue<number>;
   clock: SharedValue<number>;
   big: boolean;
+  scale: number;
   onLayout: (i: number, y: number) => void;
 };
 
-const LineRow = memo(function LineRow({ line, index, isActive, activeSV, clock, big, onLayout }: RowProps) {
+const LineRow = memo(function LineRow({
+  line,
+  index,
+  isActive,
+  activeSV,
+  clock,
+  big,
+  scale: textScale,
+  onLayout,
+}: RowProps) {
   // Animate only when this row's own target changes: a line change then
   // touches a handful of rows instead of restarting animations on all of them.
   const opacity = useSharedValue(0.4);
@@ -221,7 +224,7 @@ const LineRow = memo(function LineRow({ line, index, isActive, activeSV, clock, 
     },
   );
   const style = useAnimatedStyle(() => ({ opacity: opacity.value, transform: [{ scale: scale.value }] }));
-  const fontSize = big ? 34 : 28;
+  const fontSize = Math.round((big ? 34 : 28) * textScale);
 
   return (
     <Pressable
@@ -362,7 +365,7 @@ function Dot({ k, lit, breathe }: { k: number; lit: SharedValue<number>; breathe
 
 /* ───────── plain (unsynced) ───────── */
 
-function Plain({ text, height, big }: { text: string; height: number; big: boolean }) {
+function Plain({ text, height, big, scale }: { text: string; height: number; big: boolean; scale: number }) {
   const clock = usePlaybackClock();
   const scrollRef = useAnimatedRef<Animated.ScrollView>();
   const holdUntil = useSharedValue(0);
@@ -386,10 +389,16 @@ function Plain({ text, height, big }: { text: string; height: number; big: boole
       contentContainerStyle={{ padding: 28, paddingTop: 112, paddingBottom: height * 0.4 }}
       showsVerticalScrollIndicator={false}
     >
-      <Txt style={[styles.text, { fontSize: big ? 26 : 22, lineHeight: big ? 38 : 32, opacity: 0.9 }]}>{text}</Txt>
+      <Txt
+        style={[styles.text, { fontSize: (big ? 26 : 22) * scale, lineHeight: (big ? 38 : 32) * scale, opacity: 0.9 }]}
+      >
+        {text}
+      </Txt>
     </Animated.ScrollView>
   );
 }
+
+const LYRICS_SCALE = { small: 0.82, normal: 1, large: 1.2 } as const;
 
 const styles = StyleSheet.create({
   center: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24 },
@@ -400,5 +409,4 @@ const styles = StyleSheet.create({
   dots: { flexDirection: 'row', gap: 10, paddingVertical: 18, paddingLeft: 4 },
   dot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#FFFFFF' },
   dotIdle: { opacity: 0.2, transform: [{ scale: 0.85 }] },
-  source: { position: 'absolute', right: 16, bottom: 12, fontSize: 10, opacity: 0.6 },
 });

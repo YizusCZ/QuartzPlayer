@@ -9,7 +9,10 @@ type UI = {
   addToPlaylist: string[] | null;
   /** Open "Nueva lista" sheet, with the songs it should start with (empty: none). */
   newPlaylist: string[] | null;
+  /** Track whose "Cambiar portada" sheet is open. */
+  coverFor: string | null;
   toast: string | null;
+  openCover: (id: string | null) => void;
   openNewPlaylist: (ids?: string[]) => void;
   openActions: (id: string, ctx?: { playlistId: string; index: number }) => void;
   close: () => void;
@@ -24,7 +27,9 @@ export const useUI = create<UI>()((set) => ({
   actionsCtx: null,
   addToPlaylist: null,
   newPlaylist: null,
+  coverFor: null,
   toast: null,
+  openCover: (coverFor) => set({ coverFor }),
   openNewPlaylist: (ids = []) => set({ actionsFor: null, addToPlaylist: null, newPlaylist: ids }),
   openActions: (id, ctx) => set({ actionsFor: id, actionsCtx: ctx ?? null }),
   close: () => set({ actionsFor: null, addToPlaylist: null, newPlaylist: null }),

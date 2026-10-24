@@ -1,13 +1,14 @@
-import { ScrollView, StyleSheet, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { formatTime } from '@/library/types';
 import { QualityPanel } from '@/components/QualityPanel';
 import { Artwork } from '@/components/ui/Artwork';
 import { FormatBadge } from '@/components/ui/FormatBadge';
+import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { Txt } from '@/components/ui/Txt';
-import { useLibrary } from '@/store/library';
+import { trackById, useLibrary } from '@/store/library';
 import { colors, radius, useAccent } from '@/theme';
 
 function Row({ k, v }: { k: string; v?: string | number | null }) {
@@ -28,7 +29,7 @@ export default function Info() {
   useAccent();
   const { id } = useLocalSearchParams<{ id: string }>();
   const insets = useSafeAreaInsets();
-  const t = useLibrary((s) => s.tracks[id]);
+  const t = useLibrary((s) => trackById(s, id));
   const plays = useLibrary((s) => s.plays[id]);
   if (!t) return null;
   const f = t.format;
@@ -68,9 +69,36 @@ export default function Info() {
           <Row k="Nombre" v={t.filename} />
           <Row k="Carpeta" v={t.folder} />
           <Row k="Tamaño" v={t.size ? `${(t.size / 1048576).toFixed(1)} MB` : undefined} />
-          <Row k="Origen" v={t.source === 'device' ? 'Biblioteca del dispositivo' : 'Importado en Quartz'} />
+          <Row
+            k="Origen"
+            v={
+              t.origin
+                ? `Música libre · ${t.origin.service === 'jamendo' ? 'Jamendo' : 'Internet Archive'}`
+                : t.source === 'device'
+                  ? 'Biblioteca del dispositivo'
+                  : 'Importado en Quartz'
+            }
+          />
           <Row k="Reproducciones" v={plays?.count ?? 0} />
         </View>
+
+        {t.origin ? (
+          <View style={styles.card}>
+            <Txt variant="label">LICENCIA</Txt>
+            <Row k="Licencia" v={t.origin.license} />
+            <Row k="Autor" v={t.artist} />
+            <Pressable
+              onPress={() => void Linking.openURL(t.origin!.pageUrl)}
+              style={styles.link}
+              accessibilityRole="link"
+            >
+              <Txt variant="bodyStrong" style={{ color: colors.accent }}>
+                Ver la obra y su licencia
+              </Txt>
+              <Icon name="open-in-new" size={16} color={colors.accent} />
+            </Pressable>
+          </View>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -80,4 +108,5 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 8 },
   card: { backgroundColor: colors.surface2, borderRadius: radius.md, padding: 16, gap: 10 },
   row: { flexDirection: 'row', gap: 12 },
+  link: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingTop: 4 },
 });

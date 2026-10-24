@@ -1,15 +1,18 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
-import Animated, { FadeInDown, useAnimatedStyle } from 'react-native-reanimated';
+import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { playbackTime } from '@/audio/clock';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Player, transport } from '@/audio/engine';
-import { useLibrary } from '@/store/library';
+import { trackById, useLibrary } from '@/store/library';
 import { currentTrackId, usePlayer } from '@/store/player';
 import { colors, useAccent } from '@/theme';
 import { Artwork } from './ui/Artwork';
 import { FormatBadge } from './ui/FormatBadge';
 import { IconButton } from './ui/IconButton';
+import { useJam } from '@/jam/store';
+import { useTourRef } from './tour/Tour';
+import { Icon } from './ui/Icon';
 import { Txt } from './ui/Txt';
 
 export const MINI_PLAYER_HEIGHT = 68;
@@ -24,11 +27,15 @@ export function MiniPlayer() {
     const t = transport.value;
     return { transform: [{ scaleX: t.duration > 0 ? Math.min(1, playbackTime() / t.duration) : 0 }] };
   });
-  const track = useLibrary((s) => (id ? s.tracks[id] : undefined));
+  const track = useLibrary((s) => trackById(s, id));
+  const tourRef = useTourRef('mini');
+  const inJam = useJam((s) => s.status === 'joined');
   if (!track) return null;
 
   return (
-    <Animated.View entering={FadeInDown} style={[styles.wrap, { paddingBottom: insets.bottom + 8 }]}>
+    // No entering animation: every screen mounts its own mini player, and a
+    // fade-in on each push read as lag.
+    <Animated.View ref={tourRef} style={[styles.wrap, { paddingBottom: insets.bottom + 8 }]}>
       <Pressable
         style={styles.bar}
         onPress={() => router.push('/player')}
@@ -42,6 +49,7 @@ export function MiniPlayer() {
             {track.title}
           </Txt>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {inJam ? <Icon name="account-group" size={15} color={colors.accent} /> : null}
             <FormatBadge format={track.format} compact />
             <Txt variant="caption" numberOfLines={1} style={{ flexShrink: 1 }}>
               {track.artist}

@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { PixelRatio, StyleSheet, View } from 'react-native';
 import { Canvas, Group, Image, drawAsImage, type SkImage, type Transforms3d } from '@shopify/react-native-skia';
 import Animated, {
+  type SharedValue,
   Easing,
   useAnimatedStyle,
   useDerivedValue,
@@ -32,13 +33,15 @@ import { cassetteFonts, useSkiaFaces } from '../skiaFonts';
 import {
   CassetteBase,
   CassetteReels,
+  loadStickerImages,
   CASSETTE_H,
   CASSETTE_W,
   PACK_MAX,
   PACK_MIN,
   type CassetteText,
 } from './CassetteArt';
-import { SKINS, modelCode, type CassetteSkinId } from './skins';
+import { useSkin } from './customSkins';
+import { modelCode, type CassetteSkinId } from './skins';
 
 /** Visual tape speed in design units/s → ~0.9 rev/s on a bare hub. */
 const TAPE_V = 300;
@@ -85,16 +88,31 @@ type Props = {
   height: number;
   /** Changing the side plays the turn-over animation. */
   side: 'A' | 'B';
+  /**
+   * Horizontal finger offset while you scrub the tape (px). The cassette
+   * follows and tilts with it, and the reels spin with the finger's speed.
+   */
+  drag?: SharedValue<number>;
 };
 
-export function CassetteView({ track, width, height, side: requestedSide }: Props) {
+/** The last few rasterised cassettes, so switching back to this mode is instant. */
+const rasters = new Map<string, SkImage>();
+const remember = (key: string, img: SkImage) => {
+  rasters.delete(key);
+  rasters.set(key, img);
+  if (rasters.size > 4) rasters.delete(rasters.keys().next().value as string);
+};
+
+export function CassetteView({ track, width, height, side: requestedSide, drag }: Props) {
   const faces = useSkiaFaces();
   const fonts = useMemo(() => (faces ? cassetteFonts(faces) : null), [faces]);
   const cassetteSkin = useSettings((s) => s.cassetteSkin);
   const cassetteSkinMode = useSettings((s) => s.cassetteSkinMode);
   const handwritten = useSettings((s) => s.handwrittenLabel);
   const [side, setSide] = useState<'A' | 'B'>(requestedSide);
-  const [base, setBase] = useState<SkImage | null>(null);
+  const [drawn, setDrawn] = useState<{ key: string; img: SkImage } | null>(null);
+  const appear = useSharedValue(0);
+  const lastDrag = useSharedValue(0);
 
   const angleL = useSharedValue(0);
   const angleR = useSharedValue(0);
@@ -139,6 +157,14 @@ export function CassetteView({ track, width, height, side: requestedSide }: Prop
       if (wind === 0) wind = kickDir.value * WIND_V * Math.min(1, kickT.value * 3);
     }
 
+    // Scrubbing: the tape moves with the finger.
+    if (drag) {
+      const d = drag.value;
+      const vel = (d - lastDrag.value) / Math.max(dt, 0.001);
+      lastDrag.value = d;
+      if (vel !== 0) wind = vel * 6;
+    }
+
     const v = (motor.value * TAPE_V * t.rate + wind) * mirror.value;
     const p = mirror.value > 0 ? shown.value : 1 - shown.value;
     const rL = Math.sqrt(PACK_MIN * PACK_MIN + (1 - p) * SPAN);
@@ -169,12 +195,21 @@ export function CassetteView({ track, width, height, side: requestedSide }: Prop
     );
   }, [requestedSide, side, flip]);
 
-  const flipStyle = useAnimatedStyle(() => ({
-    transform: [{ perspective: 1400 }, { rotateY: `${flip.value}deg` }],
-  }));
+  const flipStyle = useAnimatedStyle(() => {
+    const d = drag ? drag.value : 0;
+    return {
+      opacity: appear.value,
+      transform: [
+        { perspective: 1400 },
+        { translateX: d * 0.22 },
+        { rotateY: `${flip.value + Math.max(-18, Math.min(18, d * 0.06))}deg` },
+        { rotateZ: `${Math.max(-4, Math.min(4, d * 0.012))}deg` },
+      ],
+    };
+  });
 
   const skinId = skinFor(track, cassetteSkinMode, cassetteSkin);
-  const skin = SKINS[skinId];
+  const skin = useSkin(skinId);
   const { scale, transform } = layout(width, height);
   const ratio = PixelRatio.get();
 
@@ -202,9 +237,17 @@ export function CassetteView({ track, width, height, side: requestedSide }: Prop
     [track, side, skinId, handwritten],
   );
 
+  const rasterKey = `${skinId}|${JSON.stringify(skin.stickers ?? [])}|${skin.shell}${skin.paper}${skin.stripe.join()}${skin.band.join()}${skin.window.join()}${skin.arrow}${skin.ink}|${JSON.stringify(text)}|${width}x${height}@${ratio}`;
+  const base = rasters.get(rasterKey) ?? (drawn?.key === rasterKey ? drawn.img : null);
+
+  // Fade in once the cassette is drawn: it never pops in over an empty frame.
+  useEffect(() => {
+    appear.set(base ? withTiming(1, { duration: 220 }) : 0);
+  }, [base, appear]);
+
   // Rasterise the static layer whenever its content or size changes.
   useEffect(() => {
-    if (!fonts || width <= 0 || height <= 0) return;
+    if (!fonts || width <= 0 || height <= 0 || rasters.has(rasterKey)) return;
     let alive = true;
     const { transform: t, scale: s } = layout(width, height);
     const el = (
@@ -212,13 +255,17 @@ export function CassetteView({ track, width, height, side: requestedSide }: Prop
         <CassetteBase skin={skin} fonts={fonts} px={s * ratio} {...text} />
       </Group>
     );
-    void drawAsImage(el, { width: Math.round(width * ratio), height: Math.round(height * ratio) }).then((img) => {
-      if (alive) setBase(img);
-    });
+    void loadStickerImages(skin.stickers)
+      .then(() => drawAsImage(el, { width: Math.round(width * ratio), height: Math.round(height * ratio) }))
+      .then((img) => {
+        if (!img) return;
+        remember(rasterKey, img);
+        if (alive) setDrawn({ key: rasterKey, img });
+      });
     return () => {
       alive = false;
     };
-  }, [fonts, skin, text, width, height, ratio]);
+  }, [fonts, skin, text, width, height, ratio, rasterKey]);
 
   if (!fonts || width <= 0 || height <= 0) return <View style={{ width, height }} />;
 

@@ -11,7 +11,9 @@ import expo.modules.kotlin.sharedobjects.SharedRef
 /**
  * 10-band graphic equaliser on the player's own audio session, built on
  * DynamicsProcessing (API 28+): true per-band gains at fixed centre
- * frequencies, an input preamp and a brick-wall limiter so boosts never clip.
+ * frequencies, an input preamp, left/right balance, a one-band compressor
+ * that evens out loud and quiet passages, and a brick-wall limiter so boosts
+ * never clip.
  */
 class AudioDspModule : Module() {
   private var dp: DynamicsProcessing? = null
@@ -40,7 +42,7 @@ class AudioDspModule : Module() {
       DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
       2,
       true, centres.size,
-      false, 0,
+      true, 1,
       false, 0,
       true,
     ).build()
@@ -56,7 +58,8 @@ class AudioDspModule : Module() {
 
     Function("bandFrequencies") { centres.toList() }
 
-    AsyncFunction("setEqualizer") { player: SharedObject, enabled: Boolean, preamp: Double, gains: List<Double> ->
+    AsyncFunction("setEqualizer") { player: SharedObject, enabled: Boolean, preamp: Double, gains: List<Double>,
+                                    balance: Double, leveling: Double ->
       val id = sessionOf(player) ?: return@AsyncFunction false
       if (id == 0) return@AsyncFunction false
       val fx = ensure(id) ?: return@AsyncFunction false
@@ -68,7 +71,19 @@ class AudioDspModule : Module() {
         val g = gains.getOrNull(i)?.toFloat() ?: 0f
         fx.setPreEqBandAllChannelsTo(i, DynamicsProcessing.EqBand(true, cutoff(i), g))
       }
-      fx.setInputGainAllChannelsTo(preamp.toFloat())
+      // Balance: the far side is turned down, never the near one up.
+      val b = balance.coerceIn(-1.0, 1.0)
+      fun db(v: Double) = if (v <= 0.001) -60f else (20 * Math.log10(v)).toFloat().coerceAtLeast(-60f)
+      fx.setInputGainbyChannel(0, preamp.toFloat() + db(if (b > 0) 1 - b else 1.0))
+      fx.setInputGainbyChannel(1, preamp.toFloat() + db(if (b < 0) 1 + b else 1.0))
+      // Leveling 0…1: up to 4:1 above −30 dBFS, with make-up gain so it doesn't just get quieter.
+      val l = leveling.coerceIn(0.0, 1.0).toFloat()
+      fx.setMbcBandAllChannelsTo(
+        0,
+        DynamicsProcessing.MbcBand(
+          l > 0f, 20000f, 8f, 250f, 1f + 3f * l, -12f - 18f * l, 8f, -90f, 1f, 0f, 9f * l
+        )
+      )
       // attack 1 ms, release 60 ms, ratio 10:1, threshold −1 dBFS: transparent unless a boost would clip.
       fx.setLimiterAllChannelsTo(DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -1f, 0f))
       fx.enabled = true

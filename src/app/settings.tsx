@@ -4,14 +4,15 @@ import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
-import { SKINS, type CassetteSkinId } from '@/components/cassette/skins';
+import { useSkinList } from '@/components/cassette/customSkins';
+import { isBuiltinSkin } from '@/components/cassette/skins';
 import { Icon } from '@/components/ui/Icon';
 import { ScreenHeader } from '@/components/ui/ScreenHeader';
 import { Txt } from '@/components/ui/Txt';
 import { useDiscordStatus, type DiscordStatus } from '@/integrations/discord';
 import { scanLibrary } from '@/library/scanner';
 import { useLibrary } from '@/store/library';
-import { PALETTES, useSettings, type PaletteId } from '@/store/settings';
+import { PALETTES, useSettings, type PaletteId, type YtDownloadQuality } from '@/store/settings';
 import { ACCENTS, colors, radius, useAccent } from '@/theme';
 import { MODES } from '@/lib/modes';
 
@@ -98,7 +99,7 @@ function Choice({
   );
 }
 
-function Segment<T extends number>({
+function Segment<T extends number | string>({
   label,
   options,
   value,
@@ -178,6 +179,11 @@ function HuePicker({ value, onChange }: { value: string; onChange: (hex: string)
 export default function Settings() {
   useAccent();
   const s = useSettings();
+  const skinList = useSkinList();
+  const mine =
+    s.cassetteSkinMode === 'fixed'
+      ? skinList.find((sk) => sk.id === s.cassetteSkin && !isBuiltinSkin(sk.id))
+      : undefined;
   const discord = useDiscordStatus();
   const lastScan = useLibrary((x) => x.lastScan);
   const count = useLibrary((x) => Object.keys(x.tracks).length);
@@ -213,6 +219,28 @@ export default function Settings() {
             detail="El reproductor toma los colores de la portada y los muestra como un fondo translúcido en movimiento."
             value={s.ambientShare}
             onChange={(v) => s.set({ ambientShare: v })}
+          />
+          <Segment
+            label="Forma de la carátula"
+            options={[
+              { value: 'square', label: 'Cuadrada' },
+              { value: 'rounded', label: 'Redondeada' },
+              { value: 'round', label: 'Círculo' },
+            ]}
+            value={s.coverShape}
+            onChange={(v) => s.set({ coverShape: v })}
+          />
+          <Toggle
+            label="Listas en el inicio"
+            detail="El carrusel de tus listas en la Biblioteca local."
+            value={s.homePlaylists}
+            onChange={(v) => s.set({ homePlaylists: v })}
+          />
+          <Toggle
+            label="Escuchado recientemente"
+            detail="La fila de canciones recientes en el inicio."
+            value={s.homeRecent}
+            onChange={(v) => s.set({ homeRecent: v })}
           />
         </Section>
 
@@ -316,6 +344,16 @@ export default function Settings() {
             value={s.onlineLyrics}
             onChange={(v) => s.set({ onlineLyrics: v })}
           />
+          <Segment
+            label="Tamaño del texto"
+            options={[
+              { value: 'small', label: 'Pequeño' },
+              { value: 'normal', label: 'Normal' },
+              { value: 'large', label: 'Grande' },
+            ]}
+            value={s.lyricsSize}
+            onChange={(v) => s.set({ lyricsSize: v })}
+          />
         </Section>
 
         <Section title="PORTADAS ANIMADAS">
@@ -334,6 +372,14 @@ export default function Settings() {
             value={s.discordPresence}
             onChange={(v) => s.set({ discordPresence: v })}
           />
+          {s.discordPresence ? (
+            <Toggle
+              label="Sala abierta"
+              detail="Cuando estás en una sala, tu estado muestra «Unirse a escuchar juntos» para que tus amigos entren con un toque."
+              value={s.discordRoomInvite}
+              onChange={(v) => s.set({ discordRoomInvite: v })}
+            />
+          ) : null}
         </Section>
 
         <Section title="CASSETTE">
@@ -344,27 +390,31 @@ export default function Settings() {
             onPress={() => s.set({ cassetteSkinMode: 'auto' })}
           />
           <View style={styles.skins}>
-            {(Object.keys(SKINS) as CassetteSkinId[]).map((id) => {
+            {skinList.map((sk) => {
+              const id = sk.id;
               const on = s.cassetteSkinMode === 'fixed' && s.cassetteSkin === id;
-              const [name, type] = SKINS[id].name.split(' · ');
+              const [name, type] = sk.name.split(' · ');
               return (
                 <Pressable
                   key={id}
                   onPress={() => s.set({ cassetteSkinMode: 'fixed', cassetteSkin: id })}
+                  onLongPress={() =>
+                    id.startsWith('custom_') && router.push({ pathname: '/cassette-maker', params: { id } })
+                  }
                   style={[styles.skin, on && { borderColor: colors.accent, backgroundColor: colors.accentSoft }]}
                   accessibilityRole="radio"
                   accessibilityState={{ checked: on }}
-                  accessibilityLabel={SKINS[id].name}
+                  accessibilityLabel={sk.name}
                 >
                   <LinearGradient
-                    colors={[SKINS[id].shellLight, SKINS[id].shell]}
+                    colors={[sk.shellLight, sk.shell]}
                     style={styles.skinShell}
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                   >
-                    <View style={[styles.skinLabel, { backgroundColor: SKINS[id].paper }]}>
+                    <View style={[styles.skinLabel, { backgroundColor: sk.paper }]}>
                       <LinearGradient
-                        colors={SKINS[id].stripe}
+                        colors={sk.stripe}
                         start={{ x: 0, y: 0 }}
                         end={{ x: 1, y: 0 }}
                         style={styles.skinStripe}
@@ -383,6 +433,30 @@ export default function Settings() {
               );
             })}
           </View>
+          {mine ? (
+            <Pressable
+              style={styles.row}
+              onPress={() => router.push({ pathname: '/cassette-maker', params: { id: mine.id } })}
+              accessibilityRole="button"
+            >
+              <Icon name="pencil-outline" color={colors.accent} />
+              <View style={{ flex: 1, gap: 2 }}>
+                <Txt variant="bodyStrong">Editar “{mine.name}”</Txt>
+                <Txt variant="caption">Cambia el cassette que estás usando sin crear otro.</Txt>
+              </View>
+              <Icon name="chevron-right" color={colors.textMute} />
+            </Pressable>
+          ) : null}
+          <Pressable style={styles.row} onPress={() => router.push('/cassette-maker')} accessibilityRole="button">
+            <Icon name="palette-outline" color={colors.accent} />
+            <View style={{ flex: 1, gap: 2 }}>
+              <Txt variant="bodyStrong">Crea tu cassette</Txt>
+              <Txt variant="caption">
+                Uno nuevo con colores, degradados y stickers. Mantén pulsado uno tuyo para editarlo.
+              </Txt>
+            </View>
+            <Icon name="chevron-right" color={colors.textMute} />
+          </Pressable>
           <Toggle
             label="Etiqueta escrita a mano"
             value={s.handwrittenLabel}
@@ -406,6 +480,31 @@ export default function Settings() {
               onChange={(n) => s.set({ cassetteAodDelay: n as 10 | 30 | 60 })}
             />
           ) : null}
+        </Section>
+
+        <Section title="DESCARGAS (YOUTUBE)">
+          <Segment<YtDownloadQuality>
+            label="Calidad de descarga"
+            options={[
+              { value: 'best', label: 'Máxima' },
+              { value: 'high', label: 'Alta' },
+              { value: 'normal', label: 'Estándar' },
+            ]}
+            value={s.ytDownloadQuality ?? 'best'}
+            onChange={(q) => s.set({ ytDownloadQuality: q })}
+          />
+          <View style={styles.dlQualityInfo}>
+            <Txt variant="caption" style={{ color: colors.textDim }}>
+              {s.ytDownloadQuality === 'normal'
+                ? 'AAC 128 kbps (.m4a) — Archivo más ligero y máxima compatibilidad.'
+                : s.ytDownloadQuality === 'high'
+                  ? 'Opus ~160 kbps (.opus) — Alta fidelidad con compresión eficiente.'
+                  : 'Opus hasta ~256 kbps (.opus) — La máxima calidad disponible sin pérdida adicional.'}
+            </Txt>
+            <Txt variant="caption" style={{ color: colors.textMute, fontSize: 11 }}>
+              Las canciones descargadas se guardan en tu biblioteca local (Documents/Music/YouTube) y se pueden escuchar sin conexión.
+            </Txt>
+          </View>
         </Section>
 
         <Section title="BIBLIOTECA">
@@ -530,4 +629,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   paletteSwatch: { height: 26, borderRadius: 6 },
+  dlQualityInfo: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 4,
+    backgroundColor: colors.surface2,
+  },
 });

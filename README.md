@@ -43,6 +43,11 @@ No incluye, vende ni distribuye música: funciona con los archivos que tengas de
 - Canciones, Álbumes, Artistas, Géneros, Carpetas, Hi-Res, Favoritas, Recientes y Más escuchadas.
 - Listas con carátula de cassette por defecto, o con una imagen tuya. Se crean desde el inicio con un toque y se llenan eligiendo varias canciones a la vez.
 
+**Música libre**
+- Búsqueda y descarga de música legal desde Jamendo (artistas independientes, en FLAC) e Internet Archive (Live Music Archive y audio con licencia Creative Commons o de dominio público).
+- Las descargas entran en la biblioteca con su carátula, su artista y su licencia, visible en la ficha técnica de cada canción.
+- Las grabaciones que los servicios marcan como solo para escuchar en línea no se ofrecen.
+
 **Calidad y salida de audio**
 - Ficha de calidad por pista: formato, bits, frecuencia, rango dinámico y nivel (de "Básica" a "Máster de estudio").
 - Muestra el dispositivo de salida, su frecuencia y el códec Bluetooth cuando el sistema lo expone.
@@ -74,6 +79,8 @@ cp .env.example .env   # y rellena los valores
 | Variable | Para qué sirve |
 | --- | --- |
 | `EXPO_PUBLIC_DISCORD_APP_ID` | ID de tu aplicación en el Discord Developer Portal. Sin ella, la presencia en Discord aparece como no disponible. |
+| `EXPO_PUBLIC_JAMENDO_CLIENT_ID` | Client ID de [Jamendo](https://developer.jamendo.com). Sin él, Música libre solo busca en Internet Archive. |
+| `JAMENDO_CLIENT_SECRET` | Opcional, solo para OAuth. No lleva el prefijo `EXPO_PUBLIC_` para que nunca se incruste en la app. |
 
 El archivo `.env` no se sube al repositorio. Las variables `EXPO_PUBLIC_*` se incrustan en el bundle al compilar.
 
@@ -139,6 +146,7 @@ El código es visible para consulta, pero **no se permite copiarlo, modificarlo,
 ## Créditos
 
 - Letras sincronizadas: [LRCLIB](https://lrclib.net).
+- Música libre: [Jamendo](https://www.jamendo.com) e [Internet Archive](https://archive.org).
 - Portadas animadas y búsqueda de álbumes: Apple Music / iTunes.
 - Iconos de efectos en Discord: [Twemoji](https://github.com/jdecked/twemoji), CC-BY 4.0.
 

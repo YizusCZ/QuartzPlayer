@@ -52,7 +52,10 @@ export default function Queue() {
   const playing = usePlayer((s) => s.playing);
   const shuffle = usePlayer((s) => s.shuffle);
   const repeat = usePlayer((s) => s.repeat);
-  const tracks = useLibrary((s) => s.tracks);
+  const local = useLibrary((s) => s.tracks);
+  const remote = useLibrary((s) => s.remote);
+  // Your files and streamed songs, by id.
+  const tracks = useMemo(() => ({ ...remote, ...local }), [local, remote]);
   const [showHistory, setShowHistory] = useState(false);
 
   const current = tracks[queue[index]];

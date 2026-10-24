@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, View, useWindowDimensions, type LayoutChangeEvent } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import {
+  ActivityIndicator,
+  BackHandler,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
+} from 'react-native';
+import { router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
@@ -20,7 +29,9 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { scheduleOnRN } from 'react-native-worklets';
 import { acquireAnalyzer, rearmAnalyzer, releaseAnalyzer, type AnalyzerMode } from '@/audio/analyzer';
-import { NIGHTCORE_RATE, Player, SLOWED_RATE } from '@/audio/engine';
+import { playbackTime } from '@/audio/clock';
+import { NIGHTCORE_RATE, Player, SLOWED_RATE, transport } from '@/audio/engine';
+import { downloadYt, useYtDownloads, ytInLibrary, type YtDownloadItem } from '@/catalog/ytDownloads';
 import { clearFx, FX, FX_PRESETS, fxSupported, toggleFx } from '@/audio/fx';
 import { CassetteAOD } from '@/components/cassette/CassetteAOD';
 import { CassetteView } from '@/components/cassette/CassetteView';
@@ -31,18 +42,24 @@ import { SeekBar } from '@/components/ui/SeekBar';
 import { Sheet, SheetItem, SheetTitle } from '@/components/ui/Sheet';
 import { Txt } from '@/components/ui/Txt';
 import { ScopeView } from '@/components/visualizers/ScopeView';
-import { MotionCover, VideoStage } from '@/components/visualizers/VideoStage';
+import { MotionCover, prefetchYouTubeVideo, VideoStage } from '@/components/visualizers/VideoStage';
+import { HelpButton, TourTarget, useTourActive, useTourRef } from '@/components/tour/Tour';
+import { useJam } from '@/jam/store';
+import { Marquee } from '@/components/ui/Marquee';
+import type { SearchFilter } from '@/youtube/YouTubeHome';
 import { LyricsView } from '@/components/visualizers/LyricsView';
 import { LedView, MirrorView, RadialView, SpectrumView } from '@/components/visualizers/SpectrumView';
 import { QualityPanel } from '@/components/QualityPanel';
 import { AmbientBackdrop } from '@/components/AmbientBackdrop';
 import { AudioRouteChip, AudioRoutePanel } from '@/components/AudioRouteChip';
 import { tierOf } from '@/library/quality';
-import type { Track } from '@/library/types';
+import { formatTime, type Track } from '@/library/types';
+import { useSkinList } from '@/components/cassette/customSkins';
+import { isBuiltinSkin, type CassetteSkinId } from '@/components/cassette/skins';
 import { VUMeterView } from '@/components/visualizers/VUMeterView';
 import { tap } from '@/lib/haptics';
 import { useAppActive } from '@/lib/useAppActive';
-import { useLibrary } from '@/store/library';
+import { trackById, useLibrary } from '@/store/library';
 import { currentTrackId, usePlayer } from '@/store/player';
 import { useSettings, VISUALIZERS, type PlayerMode } from '@/store/settings';
 import { MODES } from '@/lib/modes';
@@ -50,12 +67,69 @@ import { useEq } from '@/store/eq';
 import { useUI } from '@/store/ui';
 import { useMedia } from '@/store/media';
 import { forgetUserFile, pick } from '@/lib/userMedia';
-import { colors, radius, useAccent } from '@/theme';
+import { colors, fonts, radius, useAccent } from '@/theme';
 
 type Mode = PlayerMode;
 const HIDE_AFTER = 4000;
 const RATES = [0.75, 0.9, 1, 1.1, 1.25, 1.5];
 const SLEEP = [15, 30, 45, 60, 90];
+
+function PlayerDownloadButton({ track }: { track: Track }) {
+  const videoId = track.uri.replace(/^yt:/, '');
+  const dlState = useYtDownloads((s) => s.items[videoId]);
+  useYtDownloads((s) => s.downloaded);
+  const inLib = !!ytInLibrary(videoId);
+  const isDone = inLib || dlState?.status === 'done';
+  const isBusy = !inLib && (dlState?.status === 'downloading' || dlState?.status === 'resolving' || dlState?.status === 'queued');
+  const showToast = useUI((s) => s.showToast);
+
+  const handlePress = () => {
+    if (isDone) {
+      showToast('Ya está guardada en tu biblioteca local');
+      tap('select');
+      return;
+    }
+    if (isBusy) {
+      showToast('Guardando en tu biblioteca local…');
+      return;
+    }
+    tap('medium');
+    const item: YtDownloadItem = {
+      videoId,
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      thumbnail: track.artwork,
+      duration: track.duration,
+    };
+    downloadYt([item]);
+    showToast('Guardando en tu biblioteca local…');
+  };
+
+  if (isBusy) {
+    return (
+      <Pressable
+        onPress={handlePress}
+        style={styles.playerDlBtn}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel="Guardando en tu biblioteca local"
+      >
+        <ActivityIndicator size="small" color={colors.accent} />
+      </Pressable>
+    );
+  }
+
+  return (
+    <IconButton
+      icon={isDone ? 'check-circle' : 'download'}
+      color={isDone ? colors.accent : colors.text}
+      label={isDone ? 'Guardada en tu biblioteca' : 'Guardar en biblioteca local'}
+      size={24}
+      onPress={handlePress}
+    />
+  );
+}
 
 export default function PlayerScreen() {
   useAccent();
@@ -64,7 +138,7 @@ export default function PlayerScreen() {
   const landscape = width > height;
 
   const id = usePlayer(currentTrackId);
-  const track = useLibrary((s) => (id ? s.tracks[id] : undefined));
+  const track = useLibrary((s) => trackById(s, id));
   const fav = useLibrary((s) => (id ? !!s.favorites[id] : false));
   const playing = usePlayer((s) => s.playing);
   const index = usePlayer((s) => s.index);
@@ -76,18 +150,34 @@ export default function PlayerScreen() {
   const quickModes = useSettings((x) => x.quickModes);
   const aodEnabled = useSettings((x) => x.cassetteAod);
   const aodDelay = useSettings((x) => x.cassetteAodDelay);
+  const coverShape = useSettings((x) => x.coverShape);
+  // Warm up the music video while you look at the cover, so Vídeo opens without a wait.
+  useEffect(() => prefetchYouTubeVideo(track), [track?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const jamCode = useJam((s) => (s.status === 'joined' ? s.code : null));
+  const rightRef = useTourRef('player.right');
+  const stageRef = useTourRef('player.stage');
+  const toolsRef = useTourRef('player.tools');
 
-  const [mode, setMode] = useState<Mode>(playing && autoVisualizer ? lastVisualizer : 'cover');
+  // `mode`: opened to show something specific (a search result's music video).
+  const { mode: startMode } = useLocalSearchParams<{ mode?: Mode }>();
+  const [mode, setMode] = useState<Mode>(startMode ?? (playing && autoVisualizer ? lastVisualizer : 'cover'));
   const [side, setSide] = useState<'A' | 'B'>('A');
   const [stage, setStage] = useState({ w: 0, h: 0 });
   const [chrome, setChrome] = useState(true);
   const [sheet, setSheet] = useState<
-    'none' | 'speed' | 'sleep' | 'more' | 'quality' | 'modes' | 'route' | 'artist' | 'fx' | 'video'
+    'none' | 'speed' | 'sleep' | 'more' | 'quality' | 'modes' | 'route' | 'artist' | 'fx' | 'video' | 'skins'
   >('none');
   const [analyzer, setAnalyzer] = useState<AnalyzerMode>('off');
   const [chromeTick, setChromeTick] = useState(0);
   const chromeOpacity = useSharedValue(1);
   const [aod, setAod] = useState(false);
+  /** Pocket mode for the cassette: every touch is ignored until a long press. */
+  const [locked, setLocked] = useState(false);
+  /** Where the tape will land while you scrub the cassette (s), or null. */
+  const [scrubTo, setScrubTo] = useState<number | null>(null);
+  const scrubX = useSharedValue(0);
+  const scrubStart = useSharedValue(0);
+  const scrubSec = useSharedValue(-1);
 
   const immersive = mode !== 'cover';
 
@@ -105,7 +195,8 @@ export default function PlayerScreen() {
   }
 
   // Controls fade away while a visualizer plays; any touch brings them back.
-  const chromeShown = chrome || !immersive || !playing;
+  const touring = useTourActive();
+  const chromeShown = !locked && (chrome || !immersive || !playing || touring);
   const showChrome = useCallback(() => {
     setChrome(true);
     setChromeTick((t) => t + 1);
@@ -144,11 +235,9 @@ export default function PlayerScreen() {
   const [ready, setReady] = useState(false);
   // Canvases and the analyzer only run while the app is on screen.
   const active = useAppActive();
-  // The moment the player starts closing, everything that animates stops, so
-  // the slide down to the mini player runs on an idle UI thread.
-  const [closing, setClosing] = useState(false);
-  useEffect(() => navigation.addListener('beforeRemove', () => setClosing(true)), [navigation]);
-  const live = ready && active && !closing;
+  // Nothing on stage changes while the player closes: swapping the video or a
+  // visualizer for the still cover mid-slide is what used to flash.
+  const live = ready && active;
   useEffect(() => {
     const done = () => setReady(true);
     const unsub = navigation.addListener('transitionEnd' as never, done);
@@ -179,11 +268,11 @@ export default function PlayerScreen() {
 
   useEffect(() => {
     // The always-on display keeps the screen lit even when paused.
-    if (!((immersive && keepAwake && playing) || aodShown)) return;
+    if (!((immersive && keepAwake && playing) || aodShown || locked)) return;
     // Both reject once the activity is gone (closing the player, app backgrounded).
     activateKeepAwakeAsync('quartz-visualizer').catch(() => {});
     return () => void deactivateKeepAwake('quartz-visualizer').catch(() => {});
-  }, [immersive, keepAwake, playing, aodShown]);
+  }, [immersive, keepAwake, playing, aodShown, locked]);
 
   const cycleMode = (dir: 1 | -1) => {
     const i = MODES.findIndex((m) => m.id === mode);
@@ -217,29 +306,72 @@ export default function PlayerScreen() {
     navigation.setOptions({ animation: 'none' } as never);
     router.back();
   };
-  const dismiss = () => {
-    setClosing(true);
+  /** Slides the player away on the UI thread; JS is only told once it is off screen. */
+  const slideAway = () => {
+    'worklet';
     dragY.set(
-      withTiming(height, { duration: 240, easing: Easing.out(Easing.cubic) }, (done) => {
+      withTiming(height, { duration: 220, easing: Easing.out(Easing.cubic) }, (done) => {
         if (done) scheduleOnRN(finishClose);
       }),
     );
   };
+  const dismiss = () => slideAway();
   const onDoubleTap = () => {
     if (mode === 'cassette') flipSide();
   };
   const onSingleTap = () => {
     if (!immersive) return;
+    if (mode === 'cassette') {
+      // Tapping the tape is the play/pause button.
+      Player.toggle();
+      tap('medium');
+      showChrome();
+      return;
+    }
     if (chromeShown) setChrome(false);
     else showChrome();
   };
+  const finishScrub = (to: number) => {
+    setScrubTo(null);
+    Player.seek(to);
+    tap('select');
+  };
+  const cassetteMode = mode === 'cassette';
+  const stageWidth = Math.max(1, stage.w);
 
+  // On the cassette, a sideways drag winds the tape (scrub); elsewhere it changes mode.
   const swipe = Gesture.Pan()
     .onTouchesDown(skipChrome)
-    .activeOffsetX([-30, 30])
+    .activeOffsetX(cassetteMode ? [-8, 8] : [-30, 30])
     .failOffsetY([-25, 25])
+    .onStart(() => {
+      'worklet';
+      if (!cassetteMode) return;
+      scrubStart.set(playbackTime());
+      scrubSec.set(-1);
+    })
+    .onUpdate((e) => {
+      'worklet';
+      if (!cassetteMode) return;
+      scrubX.set(e.translationX);
+      const d = transport.value.duration;
+      // A full-width drag winds about 40 % of the song.
+      const to = Math.max(0, Math.min(d, scrubStart.value + (e.translationX / stageWidth) * d * 0.4));
+      const sec = Math.floor(to);
+      if (sec !== scrubSec.value) {
+        scrubSec.set(sec);
+        scheduleOnRN(setScrubTo, to);
+      }
+    })
     .onEnd((e) => {
       'worklet';
+      if (cassetteMode) {
+        const d = transport.value.duration;
+        const to = Math.max(0, Math.min(d, scrubStart.value + (e.translationX / stageWidth) * d * 0.4));
+        scrubX.set(withSpring(0, { damping: 16, stiffness: 180 }));
+        scheduleOnRN(finishScrub, to);
+        return;
+      }
       if (Math.abs(e.translationX) > 60) scheduleOnRN(cycleMode, e.translationX < 0 ? 1 : -1);
     });
   const drop = Gesture.Pan()
@@ -252,7 +384,8 @@ export default function PlayerScreen() {
     })
     .onEnd((e) => {
       'worklet';
-      if (e.translationY > 120 || e.velocityY > 900) scheduleOnRN(dismiss);
+      // Starts right here on the UI thread: no wait for JS before the slide.
+      if (e.translationY > 120 || e.velocityY > 900) slideAway();
       else dragY.set(withSpring(0, { damping: 22, stiffness: 260 }));
     });
   const doubleTap = Gesture.Tap()
@@ -294,15 +427,34 @@ export default function PlayerScreen() {
     >
       {/* Both sides take the same width so the title and route chip sit on the true centre. */}
       <View style={styles.topSide}>
-        <IconButton icon="chevron-down" size={28} label="Cerrar reproductor" onPress={dismiss} />
+        <TourTarget id="player.close">
+          <IconButton icon="chevron-down" size={28} label="Cerrar reproductor" onPress={dismiss} />
+        </TourTarget>
+        <HelpButton tour={mode === 'cassette' ? 'cassette' : mode === 'lyrics' ? 'lyrics' : 'player'} />
       </View>
       <View style={styles.topCenter}>
-        <Txt variant="label" numberOfLines={1} style={{ textAlign: 'center' }}>
-          {playing ? 'REPRODUCIENDO' : 'EN PAUSA'} · {index + 1}/{total}
-        </Txt>
-        <AudioRouteChip onPress={() => setSheet('route')} />
+        <View style={styles.statusRow}>
+          {jamCode ? (
+            <Pressable
+              onPress={() => router.push('/jam')}
+              style={[styles.roomPill, { backgroundColor: colors.accent }]}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Estás en la sala ${jamCode}. Abrir la sala`}
+            >
+              <Icon name="account-group" size={13} color={colors.onAccent} />
+              <Txt style={[styles.roomPillText, { color: colors.onAccent }]}>{jamCode}</Txt>
+            </Pressable>
+          ) : null}
+          <Txt variant="label" numberOfLines={1} style={{ textAlign: 'center', flexShrink: 1 }}>
+            {playing ? 'REPRODUCIENDO' : 'EN PAUSA'} · {index + 1}/{total}
+          </Txt>
+        </View>
+        <TourTarget id="player.route">
+          <AudioRouteChip onPress={() => setSheet('route')} />
+        </TourTarget>
       </View>
-      <View style={[styles.topSide, { justifyContent: 'flex-end' }]}>
+      <View ref={rightRef} collapsable={false} style={[styles.topSide, { justifyContent: 'flex-end' }]}>
         <IconButton icon="playlist-play" label="Cola" onPress={() => router.push('/queue')} />
         <IconButton icon="dots-vertical" label="Más" onPress={() => setSheet('more')} />
       </View>
@@ -320,47 +472,47 @@ export default function PlayerScreen() {
   // Pinned modes, plus the current one if it was picked from "Más".
   const quick = MODES.filter((m) => quickModes.includes(m.id) || m.id === mode);
   const modeChips = (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={styles.modes}
-      style={styles.modesScroll}
-      accessibilityRole="tablist"
-    >
-      {quick.map((m) => (
-        <Pressable
-          key={m.id}
-          onPress={() => pickMode(m.id)}
-          style={[styles.modeChip, mode === m.id && { backgroundColor: colors.accentSoft }]}
-          accessibilityRole="tab"
-          accessibilityLabel={m.label}
-          accessibilityState={{ selected: mode === m.id }}
-        >
-          <Icon name={m.icon} size={20} color={mode === m.id ? colors.accent : colors.textDim} />
-        </Pressable>
-      ))}
-      <Pressable
-        onPress={() => {
-          setSheet('modes');
-          tap('select');
-        }}
-        style={styles.modeChip}
-        accessibilityRole="button"
-        accessibilityLabel="Todos los visualizadores"
+    <TourTarget id="player.modes">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.modes}
+        style={styles.modesScroll}
+        accessibilityRole="tablist"
       >
-        <Icon name="view-grid-outline" size={20} color={colors.textDim} />
-      </Pressable>
-    </ScrollView>
+        {quick.map((m) => (
+          <Pressable
+            key={m.id}
+            onPress={() => pickMode(m.id)}
+            style={[styles.modeChip, mode === m.id && { backgroundColor: colors.accentSoft }]}
+            accessibilityRole="tab"
+            accessibilityLabel={m.label}
+            accessibilityState={{ selected: mode === m.id }}
+          >
+            <Icon name={m.icon} size={20} color={mode === m.id ? colors.accent : colors.textDim} />
+          </Pressable>
+        ))}
+        <Pressable
+          onPress={() => {
+            setSheet('modes');
+            tap('select');
+          }}
+          style={styles.modeChip}
+          accessibilityRole="button"
+          accessibilityLabel="Todos los visualizadores"
+        >
+          <Icon name="view-grid-outline" size={20} color={colors.textDim} />
+        </Pressable>
+      </ScrollView>
+    </TourTarget>
   );
 
   const tier = tierOf(track.format);
   const info = (
-    <View style={{ gap: 6 }}>
+    <TourTarget id="player.info" style={{ gap: 6 }}>
       <View style={styles.titleRow}>
         <View style={{ flex: 1, gap: 2 }}>
-          <Txt variant="title" numberOfLines={1}>
-            {track.title}
-          </Txt>
+          <Marquee variant="title" text={track.title} />
           <Pressable
             onPress={() => {
               tap('select');
@@ -375,6 +527,7 @@ export default function PlayerScreen() {
             </Txt>
           </Pressable>
         </View>
+        {track.source === 'youtube' ? <PlayerDownloadButton track={track} /> : null}
         <IconButton
           icon={fav ? 'heart' : 'heart-outline'}
           color={fav ? colors.accent : colors.textDim}
@@ -388,16 +541,22 @@ export default function PlayerScreen() {
         accessibilityRole="button"
         accessibilityLabel={`Calidad: ${tier.name}. Ver detalles`}
       >
+        {/* Just the format: tapping it opens the full quality details. */}
         <FormatBadge format={track.format} />
-        <Txt variant="caption" numberOfLines={1} style={{ color: tier.color, flexShrink: 1 }}>
-          {tier.name}
-        </Txt>
-        <Icon name="chevron-right" size={16} color={colors.textMute} />
       </Pressable>
-    </View>
+    </TourTarget>
   );
 
-  const controls = <Transport onInteract={showChrome} />;
+  const controls = (
+    <TourTarget id="player.controls">
+      <Transport onInteract={showChrome} />
+    </TourTarget>
+  );
+  const seekBar = (
+    <TourTarget id="player.seek">
+      <SeekBar />
+    </TourTarget>
+  );
   const tools = (
     <Tools
       mode={mode}
@@ -407,24 +566,28 @@ export default function PlayerScreen() {
       onInteract={showChrome}
       onAod={aodEnabled ? () => (setAod(true), tap('medium')) : undefined}
       onVideo={() => setSheet('video')}
+      onLock={() => {
+        setLocked(true);
+        tap('medium');
+      }}
+      onSkins={() => setSheet('skins')}
+      hasVideo={track.source === 'youtube'}
+      onWatch={() => pickMode('video')}
     />
   );
 
+  const coverSize = Math.min(stage.w - 32, stage.h - 16, 520);
+  const coverRadius = coverShape === 'round' ? coverSize / 2 : coverShape === 'square' ? 4 : radius.lg;
   const stageView =
     stage.w > 0 ? (
       mode === 'cover' || !live ? (
         <View style={styles.center}>
-          <Animated.View entering={FadeIn} style={styles.coverShadow}>
-            <MotionCover
-              track={track}
-              size={Math.min(stage.w - 32, stage.h - 16, 520)}
-              radius={radius.lg}
-              active={live}
-            />
+          <Animated.View entering={FadeIn} style={[styles.coverShadow, { borderRadius: coverRadius }]}>
+            <MotionCover track={track} size={coverSize} radius={coverRadius} active={live} />
           </Animated.View>
         </View>
       ) : mode === 'cassette' ? (
-        <CassetteView track={track} width={stage.w} height={stage.h} side={side} />
+        <CassetteView track={track} width={stage.w} height={stage.h} side={side} drag={scrubX} />
       ) : mode === 'lyrics' ? (
         <LyricsView track={track} width={stage.w} height={stage.h} />
       ) : mode === 'video' ? (
@@ -461,6 +624,13 @@ export default function PlayerScreen() {
       router.push({ pathname: '/songs', params });
     }, 60);
   };
+  const goYouTube = (q: string, filter: SearchFilter) => {
+    setSheet('none');
+    setTimeout(() => {
+      router.back();
+      router.push({ pathname: '/youtube', params: { q, filter } });
+    }, 60);
+  };
   const albumKey = `${track.albumArtist ?? track.artist}\u0000${track.album}`;
   const artistKey = track.albumArtist ?? track.artist;
 
@@ -468,21 +638,44 @@ export default function PlayerScreen() {
     <>
       <Sheet visible={sheet === 'artist'} onClose={() => setSheet('none')}>
         <SheetTitle sub={track.album}>{track.artist}</SheetTitle>
+        {sheet === 'artist' && inLibrary(artistKey) ? (
+          <>
+            <Txt variant="label" style={styles.sheetLabel}>
+              EN TU BIBLIOTECA
+            </Txt>
+            <SheetItem
+              icon="account-music"
+              label="Ir al artista"
+              detail={artistKey}
+              onPress={() => goTo({ filter: 'artist', value: artistKey, title: artistKey })}
+            />
+            <SheetItem
+              icon="album"
+              label="Ir al álbum"
+              detail={track.album}
+              onPress={() => goTo({ filter: 'album', value: albumKey, title: track.album })}
+            />
+          </>
+        ) : null}
+        <Txt variant="label" style={styles.sheetLabel}>
+          EN YOUTUBE MUSIC
+        </Txt>
         <SheetItem
-          icon="account-music"
-          label="Ir al artista"
-          detail={artistKey}
-          onPress={() => goTo({ filter: 'artist', value: artistKey, title: artistKey })}
+          icon="youtube"
+          label="Buscar al artista"
+          detail={track.artist}
+          onPress={() => goYouTube(track.artist, 'Todo')}
         />
         <SheetItem
           icon="album"
-          label="Ir al álbum"
+          label="Buscar el álbum"
           detail={track.album}
-          onPress={() => goTo({ filter: 'album', value: albumKey, title: track.album })}
+          onPress={() => goYouTube(`${track.album} ${track.artist}`, 'Álbumes')}
         />
       </Sheet>
       <SpeedSheet visible={sheet === 'speed'} onClose={() => setSheet('none')} onEffects={() => setSheet('fx')} />
       <FxSheet visible={sheet === 'fx'} onClose={() => setSheet('none')} />
+      <SkinSheet visible={sheet === 'skins'} onClose={() => setSheet('none')} />
       <VideoSheet visible={sheet === 'video'} onClose={() => setSheet('none')} track={track} />
       <SleepSheet visible={sheet === 'sleep'} onClose={() => setSheet('none')} />
       <Sheet visible={sheet === 'modes'} onClose={() => setSheet('none')}>
@@ -554,6 +747,46 @@ export default function PlayerScreen() {
       </Sheet>
       <Sheet visible={sheet === 'more'} onClose={() => setSheet('none')}>
         <SheetTitle sub={track.artist}>{track.title}</SheetTitle>
+        {track.source === 'youtube' ? (() => {
+          const videoId = track.uri.replace(/^yt:/, '');
+          const inLib = !!ytInLibrary(videoId);
+          const isDone = inLib || useYtDownloads.getState().items[videoId]?.status === 'done';
+          const isBusy =
+            !inLib &&
+            (useYtDownloads.getState().items[videoId]?.status === 'downloading' ||
+              useYtDownloads.getState().items[videoId]?.status === 'resolving' ||
+              useYtDownloads.getState().items[videoId]?.status === 'queued');
+          return (
+            <SheetItem
+              icon={isDone ? 'check-circle' : isBusy ? 'progress-download' : 'download'}
+              label={
+                isDone
+                  ? 'Guardada en la biblioteca local'
+                  : isBusy
+                    ? 'Guardando en la biblioteca…'
+                    : 'Guardar en biblioteca local'
+              }
+              onPress={() => {
+                setSheet('none');
+                if (isDone) {
+                  useUI.getState().showToast('Ya está guardada en tu biblioteca local');
+                } else if (!isBusy) {
+                  downloadYt([
+                    {
+                      videoId,
+                      title: track.title,
+                      artist: track.artist,
+                      album: track.album,
+                      thumbnail: track.artwork,
+                      duration: track.duration,
+                    },
+                  ]);
+                  useUI.getState().showToast('Guardando en tu biblioteca local…');
+                }
+              }}
+            />
+          );
+        })() : null}
         <SheetItem
           icon="information-outline"
           label="Información técnica"
@@ -568,6 +801,15 @@ export default function PlayerScreen() {
           icon="album"
           label="Ir al álbum"
           onPress={() => goTo({ filter: 'album', value: albumKey, title: track.album })}
+        />
+        <SheetItem
+          icon="image-edit-outline"
+          label="Cambiar portada…"
+          onPress={() => {
+            setSheet('none');
+            // Let this sheet finish closing before the next one opens.
+            setTimeout(() => useUI.getState().openCover(track.id), 300);
+          }}
         />
         <SheetItem
           icon="tune-vertical"
@@ -589,13 +831,20 @@ export default function PlayerScreen() {
   const chromeCatcher = chromeShown ? null : (
     <Pressable style={StyleSheet.absoluteFill} onPress={showChrome} accessibilityLabel="Mostrar controles" />
   );
+  // The backdrop is the first child of both layouts, so switching between the
+  // cover and a visualizer keeps it mounted: it only fades, never restarts.
+  const backdrop =
+    ambient && active ? (
+      <AmbientLayer uri={track.artwork} visible={showAmbient} still={!ready || !showAmbient} />
+    ) : null;
+
   if (immersive && aodShown && live) {
     return <CassetteAOD track={track} side={side} onWake={wakeFromAod} />;
   }
   if (immersive) {
     return (
-      <Animated.View style={[styles.screen, showAmbient && { backgroundColor: 'transparent' }, dropStyle]}>
-        {showAmbient && active ? <AmbientBackdrop uri={track.artwork} still={!ready || closing} /> : null}
+      <Animated.View style={[styles.screen, dropStyle]}>
+        {backdrop}
         <GestureDetector gesture={stageGesture}>
           <View
             style={[
@@ -608,12 +857,24 @@ export default function PlayerScreen() {
               },
             ]}
           >
-            <View style={{ flex: 1 }} onLayout={onStageLayout} collapsable={false}>
+            <View ref={stageRef} style={{ flex: 1 }} onLayout={onStageLayout} collapsable={false}>
               {stageView}
             </View>
           </View>
         </GestureDetector>
         {simNote}
+        {scrubTo != null && cassetteMode ? (
+          <View style={styles.scrub} pointerEvents="none">
+            <Icon
+              name={scrubTo >= usePlayer.getState().position ? 'fast-forward' : 'rewind'}
+              size={18}
+              color={colors.text}
+            />
+            <Txt variant="title" style={{ fontSize: 20 }}>
+              {formatTime(scrubTo)}
+            </Txt>
+          </View>
+        ) : null}
         <Animated.View
           style={[styles.floatTop, chromeStyle]}
           pointerEvents="box-none"
@@ -651,26 +912,29 @@ export default function PlayerScreen() {
             }}
           >
             {info}
-            <SeekBar />
+            {seekBar}
             {controls}
-            <View style={styles.toolsRow}>{tools}</View>
+            <View ref={toolsRef} collapsable={false} style={styles.toolsRow}>
+              {tools}
+            </View>
             {modeChips}
           </View>
           {chromeCatcher}
         </Animated.View>
         {sheets}
+        {locked ? <LockOverlay onUnlock={() => setLocked(false)} /> : null}
       </Animated.View>
     );
   }
 
   /* ── cover layout (Walkman-style now playing) ── */
   return (
-    <Animated.View style={[styles.screen, showAmbient && { backgroundColor: 'transparent' }, dropStyle]}>
-      {showAmbient && active ? <AmbientBackdrop uri={track.artwork} still={!ready || closing} /> : null}
+    <Animated.View style={[styles.screen, dropStyle]}>
+      {backdrop}
       {topBar}
       <View style={[{ flex: 1 }, landscape && { flexDirection: 'row' }]}>
         <GestureDetector gesture={stageGesture}>
-          <View style={{ flex: landscape ? 1 : 1.25 }} onLayout={onStageLayout} collapsable={false}>
+          <View ref={stageRef} style={{ flex: landscape ? 1 : 1.25 }} onLayout={onStageLayout} collapsable={false}>
             {stageView}
           </View>
         </GestureDetector>
@@ -682,13 +946,151 @@ export default function PlayerScreen() {
           ]}
         >
           {info}
-          <SeekBar />
+          {seekBar}
           {controls}
-          <View style={styles.toolsRow}>{tools}</View>
+          <View ref={toolsRef} collapsable={false} style={styles.toolsRow}>
+            {tools}
+          </View>
           {modeChips}
         </View>
       </View>
       {sheets}
+    </Animated.View>
+  );
+}
+
+/** Pocket / lock mode: swallows every touch; a long press on the pill unlocks. */
+function LockOverlay({ onUnlock }: { onUnlock: () => void }) {
+  const insets = useSafeAreaInsets();
+  const hold = useSharedValue(0);
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => true);
+    return () => sub.remove();
+  }, []);
+  // The button fills from the centre while you hold it.
+  const fill = useAnimatedStyle(() => ({ transform: [{ scale: hold.value }], opacity: 0.4 + hold.value * 0.6 }));
+  return (
+    <View style={StyleSheet.absoluteFill} onStartShouldSetResponder={() => true}>
+      <View style={[styles.lockWrap, { bottom: insets.bottom + 28 }]}>
+        <Pressable
+          onPressIn={() => hold.set(withTiming(1, { duration: 700 }))}
+          onPressOut={() => hold.set(withTiming(0, { duration: 150 }))}
+          onLongPress={() => {
+            tap('medium');
+            onUnlock();
+          }}
+          delayLongPress={700}
+          style={styles.lockBtn}
+          hitSlop={12}
+          accessibilityRole="button"
+          accessibilityLabel="Mantén pulsado para desbloquear"
+        >
+          <Animated.View style={[styles.lockFill, { backgroundColor: colors.accentSoft }, fill]} />
+          <Icon name="lock" size={24} color={colors.accent} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/** Quick switch between cassette styles, plus the editor. */
+function SkinSheet({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const list = useSkinList();
+  const mode = useSettings((s) => s.cassetteSkinMode);
+  const current = useSettings((s) => s.cassetteSkin);
+  const mine = mode === 'fixed' ? list.find((sk) => sk.id === current && !isBuiltinSkin(sk.id)) : undefined;
+  const pick = (patch: Partial<{ cassetteSkinMode: 'auto' | 'fixed'; cassetteSkin: CassetteSkinId }>) => {
+    tap('select');
+    useSettings.getState().set(patch);
+  };
+  return (
+    <Sheet visible={visible} onClose={onClose}>
+      <SheetTitle sub="Se aplica al momento">Estilo del cassette</SheetTitle>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.skinStrip}>
+        <Pressable
+          onPress={() => pick({ cassetteSkinMode: 'auto' })}
+          style={[styles.skinCard, mode === 'auto' && { borderColor: colors.accent }]}
+          accessibilityRole="radio"
+          accessibilityState={{ checked: mode === 'auto' }}
+        >
+          <View style={[styles.skinThumb, styles.center, { backgroundColor: colors.surface3 }]}>
+            <Icon name="auto-fix" size={26} color={colors.accent} />
+          </View>
+          <Txt variant="caption" numberOfLines={1}>
+            Automático
+          </Txt>
+        </Pressable>
+        {list.map((sk) => {
+          const on = mode === 'fixed' && current === sk.id;
+          return (
+            <Pressable
+              key={sk.id}
+              onPress={() => pick({ cassetteSkinMode: 'fixed', cassetteSkin: sk.id })}
+              onLongPress={() => {
+                if (!sk.id.startsWith('custom_')) return;
+                onClose();
+                router.push({ pathname: '/cassette-maker', params: { id: sk.id } });
+              }}
+              style={[styles.skinCard, on && { borderColor: colors.accent }]}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={sk.name}
+            >
+              <LinearGradient
+                colors={[sk.shellLight, sk.shell]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.skinThumb}
+              >
+                <View style={[styles.skinPaper, { backgroundColor: sk.paper }]}>
+                  <LinearGradient
+                    colors={sk.stripe}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.skinStripe}
+                  />
+                </View>
+              </LinearGradient>
+              <Txt variant="caption" numberOfLines={1} style={on && { color: colors.accent }}>
+                {sk.name.split(' · ')[0]}
+              </Txt>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {mine ? (
+        <SheetItem
+          icon="pencil-outline"
+          label={`Editar “${mine.name}”`}
+          detail="Cambia el que estás usando"
+          onPress={() => {
+            onClose();
+            router.push({ pathname: '/cassette-maker', params: { id: mine.id } });
+          }}
+        />
+      ) : null}
+      <SheetItem
+        icon="palette-outline"
+        label="Crea tu cassette"
+        detail="Uno nuevo: colores, degradados y stickers"
+        onPress={() => {
+          onClose();
+          router.push('/cassette-maker');
+        }}
+      />
+    </Sheet>
+  );
+}
+
+function AmbientLayer({ uri, visible, still }: { uri?: string; visible: boolean; still: boolean }) {
+  const opacity = useSharedValue(visible ? 1 : 0);
+  useEffect(() => {
+    opacity.set(withTiming(visible ? 1 : 0, { duration: 320 }));
+  }, [visible, opacity]);
+  const style = useAnimatedStyle(() => ({ opacity: opacity.value }));
+  return (
+    <Animated.View style={[StyleSheet.absoluteFill, style]} pointerEvents="none">
+      <AmbientBackdrop uri={uri} still={still} />
     </Animated.View>
   );
 }
@@ -749,6 +1151,10 @@ function Tools({
   onInteract,
   onAod,
   onVideo,
+  onLock,
+  onSkins,
+  hasVideo,
+  onWatch,
 }: {
   mode: Mode;
   side: 'A' | 'B';
@@ -758,6 +1164,11 @@ function Tools({
   /** Present when the always-on display is enabled. */
   onAod?: () => void;
   onVideo: () => void;
+  onLock: () => void;
+  onSkins: () => void;
+  /** The YouTube song has a music video: offer a shortcut to watch it. */
+  hasVideo: boolean;
+  onWatch: () => void;
 }) {
   const rate = usePlayer((s) => s.rate);
   const nightcore = usePlayer((s) => s.nightcore);
@@ -770,55 +1181,85 @@ function Tools({
   return (
     <View style={styles.tools}>
       {mode === 'cassette' ? (
-        <IconButton
-          icon="rotate-3d-variant"
-          size={20}
-          label={`Voltear al lado ${side === 'A' ? 'B' : 'A'}`}
-          onPress={onFlip}
-        />
+        <TourTarget id="tool.flip">
+          <IconButton
+            icon="rotate-3d-variant"
+            size={20}
+            label={`Voltear al lado ${side === 'A' ? 'B' : 'A'}`}
+            onPress={onFlip}
+          />
+        </TourTarget>
+      ) : null}
+      {mode === 'cassette' ? (
+        <>
+          <TourTarget id="tool.skins">
+            <IconButton icon="palette-swatch-outline" size={20} label="Estilo del cassette" onPress={onSkins} />
+          </TourTarget>
+          <TourTarget id="tool.lock">
+            <IconButton icon="lock-outline" size={20} label="Bloquear pantalla" onPress={onLock} />
+          </TourTarget>
+        </>
       ) : null}
       {mode === 'cassette' && onAod ? (
-        <IconButton icon="power-sleep" size={20} label="Pantalla siempre activa" onPress={onAod} />
+        <TourTarget id="tool.aod">
+          <IconButton icon="power-sleep" size={20} label="Pantalla siempre activa" onPress={onAod} />
+        </TourTarget>
       ) : null}
       {mode === 'video' ? (
-        <IconButton icon="movie-edit-outline" size={20} label="Elegir vídeo" onPress={onVideo} />
+        <TourTarget id="tool.video">
+          <IconButton icon="movie-edit-outline" size={20} label="Elegir vídeo" onPress={onVideo} />
+        </TourTarget>
+      ) : hasVideo ? (
+        <TourTarget id="tool.watch">
+          <IconButton icon="youtube" size={20} active label="Ver el videoclip" onPress={onWatch} />
+        </TourTarget>
       ) : null}
-      <Pressable
-        onPress={() => {
-          Player.markAB();
-          onInteract();
-          tap('select');
-        }}
-        style={[styles.abBtn, abA != null && { borderColor: colors.hires }]}
-        accessibilityRole="button"
-        accessibilityLabel="Repetición A-B"
-      >
-        <Txt variant="mono" style={{ color: abA != null ? colors.hires : colors.textDim, fontSize: 11 }}>
-          {abA == null ? 'A-B' : abB == null ? 'A→' : 'A↔B'}
-        </Txt>
-      </Pressable>
-      <IconButton
-        icon="speedometer"
-        size={20}
-        active={rate !== 1 && !nightcore && !slowed}
-        label={`Velocidad ${rate}×`}
-        onPress={() => onSheet('speed')}
-      />
-      <IconButton icon="auto-fix" size={20} active={fxOn} label="Efectos de sonido" onPress={() => onSheet('fx')} />
-      <IconButton
-        icon="timer-outline"
-        size={20}
-        active={sleepOn}
-        label="Temporizador de apagado"
-        onPress={() => onSheet('sleep')}
-      />
-      <IconButton
-        icon="tune-vertical"
-        size={20}
-        active={eqOn}
-        label="Ecualizador"
-        onPress={() => router.push('/equalizer')}
-      />
+      <TourTarget id="tool.ab">
+        <Pressable
+          onPress={() => {
+            Player.markAB();
+            onInteract();
+            tap('select');
+          }}
+          style={[styles.abBtn, abA != null && { borderColor: colors.hires }]}
+          accessibilityRole="button"
+          accessibilityLabel="Repetición A-B"
+        >
+          <Txt variant="mono" style={{ color: abA != null ? colors.hires : colors.textDim, fontSize: 11 }}>
+            {abA == null ? 'A-B' : abB == null ? 'A→' : 'A↔B'}
+          </Txt>
+        </Pressable>
+      </TourTarget>
+      <TourTarget id="tool.speed">
+        <IconButton
+          icon="speedometer"
+          size={20}
+          active={rate !== 1 && !nightcore && !slowed}
+          label={`Velocidad ${rate}×`}
+          onPress={() => onSheet('speed')}
+        />
+      </TourTarget>
+      <TourTarget id="tool.fx">
+        <IconButton icon="auto-fix" size={20} active={fxOn} label="Efectos de sonido" onPress={() => onSheet('fx')} />
+      </TourTarget>
+      <TourTarget id="tool.sleep">
+        <IconButton
+          icon="timer-outline"
+          size={20}
+          active={sleepOn}
+          label="Temporizador de apagado"
+          onPress={() => onSheet('sleep')}
+        />
+      </TourTarget>
+      <TourTarget id="tool.eq">
+        <IconButton
+          icon="tune-vertical"
+          size={20}
+          active={eqOn}
+          label="Ecualizador"
+          onPress={() => router.push('/equalizer')}
+        />
+      </TourTarget>
     </View>
   );
 }
@@ -999,6 +1440,11 @@ function FxChip({
   );
 }
 
+/** Whether your files have anything by this artist (otherwise only YouTube is offered). */
+function inLibrary(artist: string) {
+  return Object.values(useLibrary.getState().tracks).some((t) => (t.albumArtist ?? t.artist) === artist);
+}
+
 function VideoSheet({ visible, onClose, track }: { visible: boolean; onClose: () => void; track: Track }) {
   const own = useMedia((s) => s.trackVideos[track.id]);
   const global = useMedia((s) => s.globalVideo);
@@ -1008,22 +1454,24 @@ function VideoSheet({ visible, onClose, track }: { visible: boolean; onClose: ()
   };
   return (
     <Sheet visible={visible} onClose={onClose}>
-      <SheetTitle sub="Si dura lo mismo que la canción, se sincroniza con ella">Vídeo del visualizador</SheetTitle>
+      <SheetTitle sub="Un vídeo o un GIF. Si el vídeo dura lo mismo que la canción, se sincroniza con ella">
+        Fondo del visualizador
+      </SheetTitle>
       <SheetItem
         icon="movie-plus-outline"
-        label={own ? 'Cambiar el vídeo de esta canción' : 'Elegir vídeo para esta canción'}
+        label={own ? 'Cambiar el fondo de esta canción' : 'Vídeo o GIF para esta canción'}
         onPress={() => choose(false)}
       />
       <SheetItem
         icon="movie-open-cog-outline"
-        label={global ? 'Cambiar el vídeo para todas' : 'Usar un vídeo para todas'}
+        label={global ? 'Cambiar el fondo para todas' : 'Vídeo o GIF para todas'}
         detail={global ? 'Activo' : undefined}
         onPress={() => choose(true)}
       />
       {own ? (
         <SheetItem
           icon="movie-remove-outline"
-          label="Quitar el vídeo de esta canción"
+          label="Quitar el fondo de esta canción"
           danger
           onPress={() => {
             forgetUserFile(own);
@@ -1035,7 +1483,7 @@ function VideoSheet({ visible, onClose, track }: { visible: boolean; onClose: ()
       {global ? (
         <SheetItem
           icon="movie-remove-outline"
-          label="Quitar el vídeo para todas"
+          label="Quitar el fondo para todas"
           danger
           onPress={() => {
             forgetUserFile(global);
@@ -1096,6 +1544,17 @@ const styles = StyleSheet.create({
   topBar: { flexDirection: 'row', alignItems: 'center', paddingBottom: 6 },
   topSide: { width: 96, flexDirection: 'row', alignItems: 'center' },
   topCenter: { flex: 1, alignItems: 'center', minWidth: 0 },
+  sheetLabel: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 2, fontSize: 11 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: '100%' },
+  roomPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  roomPillText: { fontFamily: fonts.bold, fontSize: 11, letterSpacing: 1 },
   fxHead: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
   fxRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16 },
   fxChip: {
@@ -1131,6 +1590,7 @@ const styles = StyleSheet.create({
   },
   panel: { paddingHorizontal: 20, paddingTop: 8, gap: 12 },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  playerDlBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   transport: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   playBtn: { shadowOpacity: 0.45, shadowRadius: 14, elevation: 8 },
   modeGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingBottom: 12 },
@@ -1182,6 +1642,44 @@ const styles = StyleSheet.create({
   },
   floatTop: { position: 'absolute', left: 0, right: 0, top: 0, paddingBottom: 24 },
   floatBottom: { position: 'absolute', left: 0, right: 0, bottom: 0 },
+  scrub: {
+    position: 'absolute',
+    alignSelf: 'center',
+    top: '42%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(11,11,12,0.75)',
+  },
+  lockWrap: { position: 'absolute', left: 0, right: 0, alignItems: 'center' },
+  lockFill: { position: 'absolute', left: 0, top: 0, bottom: 0, right: 0, borderRadius: 32 },
+  lockBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: 'rgba(20,20,22,0.85)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  skinStrip: { gap: 10, paddingHorizontal: 16, paddingBottom: 8 },
+  skinCard: {
+    width: 84,
+    gap: 6,
+    alignItems: 'center',
+    padding: 4,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  skinThumb: { width: 72, height: 46, borderRadius: 7, padding: 5, justifyContent: 'center' },
+  skinPaper: { flex: 1, borderRadius: 3, justifyContent: 'center', paddingHorizontal: 3 },
+  skinStripe: { height: 9, borderRadius: 2 },
   simNote: {
     position: 'absolute',
     right: 16,

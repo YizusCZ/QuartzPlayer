@@ -1,8 +1,11 @@
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import { Player } from '@/audio/engine';
+import { downloadYt, useYtDownloads, ytInLibrary, type YtDownloadItem } from '@/catalog/ytDownloads';
 import { deleteImported } from '@/library/scanner';
-import { useLibrary } from '@/store/library';
+import type { Track } from '@/library/types';
+import { pick } from '@/lib/userMedia';
+import { trackById, useLibrary } from '@/store/library';
 import { useUI } from '@/store/ui';
 import { colors, fonts, useAccent } from '@/theme';
 import { Artwork } from './ui/Artwork';
@@ -13,10 +16,27 @@ import { Txt } from './ui/Txt';
 /** Global sheets driven by `useUI`: per-track actions and "add to playlist". */
 export function TrackActions() {
   useAccent();
-  const { actionsFor, actionsCtx, addToPlaylist, close, pickPlaylist, showToast } = useUI();
-  const track = useLibrary((s) => (actionsFor ? s.tracks[actionsFor] : undefined));
+  const { actionsFor, actionsCtx, addToPlaylist, close, pickPlaylist, showToast, openCover } = useUI();
+  const track = useLibrary((s) => trackById(s, actionsFor ?? undefined));
   const fav = useLibrary((s) => (actionsFor ? !!s.favorites[actionsFor] : false));
   const playlists = useLibrary((s) => s.playlists);
+  const ytDlState = useYtDownloads((s) => {
+    if (!track || track.source !== 'youtube') return undefined;
+    const videoId = track.uri.slice(3);
+    return s.items[videoId];
+  });
+  const coverId = useUI((s) => s.coverFor);
+  const coverFor = useLibrary((s) => trackById(s, coverId ?? undefined)) ?? null;
+  const setCoverFor = (t: Track | null) => openCover(t?.id ?? null);
+
+  /** Every song of the same album (your files and streamed ones). */
+  const albumIds = (t: Track) => {
+    const { tracks, remote } = useLibrary.getState();
+    const artist = t.albumArtist ?? t.artist;
+    return [...Object.values(tracks), ...Object.values(remote)]
+      .filter((x) => x.album === t.album && (x.albumArtist ?? x.artist) === artist)
+      .map((x) => x.id);
+  };
 
   const act = (fn: () => void) => () => {
     close();
@@ -95,10 +115,55 @@ export function TrackActions() {
               )}
             />
             <SheetItem
+              icon="image-edit-outline"
+              label="Cambiar portada…"
+              onPress={() => {
+                const t = track;
+                close();
+                setTimeout(() => setCoverFor(t), 300);
+              }}
+            />
+            <SheetItem
               icon="information-outline"
               label="Información técnica"
               onPress={act(() => router.push({ pathname: '/info', params: { id: track.id } }))}
             />
+            {track.source === 'youtube' ? (() => {
+              const videoId = track.uri.slice(3);
+              const inLib = !!ytInLibrary(videoId);
+              const dlDone = inLib || ytDlState?.status === 'done';
+              const dlBusy = !inLib && (ytDlState?.status === 'downloading' || ytDlState?.status === 'resolving' || ytDlState?.status === 'queued');
+              const dlErr = !inLib && ytDlState?.status === 'error';
+              const progressPct = ytDlState?.status === 'downloading' ? Math.round(ytDlState.progress * 100) : null;
+              return (
+                <SheetItem
+                  icon={dlDone ? 'check-circle' : dlBusy ? 'progress-download' : dlErr ? 'refresh' : 'download'}
+                  label={dlDone ? 'Guardada en la biblioteca local' : dlBusy ? 'Guardando en la biblioteca…' : dlErr ? 'Reintentar guardado' : 'Guardar en biblioteca local'}
+                  detail={dlBusy && progressPct != null ? `${progressPct}%` : dlErr ? ytDlState?.message : undefined}
+                  onPress={
+                    dlDone
+                      ? () => {
+                          close();
+                          showToast('Esta canción ya está en tu biblioteca local');
+                        }
+                      : dlBusy
+                        ? () => {}
+                        : act(() => {
+                            const item: YtDownloadItem = {
+                              videoId,
+                              title: track.title,
+                              artist: track.artist,
+                              album: track.album,
+                              thumbnail: track.artwork,
+                              duration: track.duration,
+                            };
+                            downloadYt([item]);
+                            showToast('Guardando en tu biblioteca local…');
+                          })
+                  }
+                />
+              );
+            })() : null}
             {track.source === 'imported' ? (
               <SheetItem
                 icon="delete-outline"
@@ -117,6 +182,44 @@ export function TrackActions() {
               />
             ) : null}
           </ScrollView>
+        ) : null}
+      </Sheet>
+
+      <Sheet visible={!!coverFor} onClose={() => setCoverFor(null)}>
+        {coverFor ? (
+          <>
+            <SheetTitle sub="Solo en Quartz: Discord sigue mostrando la portada original">Cambiar portada</SheetTitle>
+            <SheetItem
+              icon="music-note"
+              label="Solo esta canción"
+              detail={coverFor.title}
+              onPress={() => {
+                setCoverFor(null);
+                pick({ kind: 'trackCover', ids: [coverFor.id], label: coverFor.title });
+              }}
+            />
+            <SheetItem
+              icon="album"
+              label="Todo el álbum"
+              detail={coverFor.album}
+              onPress={() => {
+                setCoverFor(null);
+                pick({ kind: 'trackCover', ids: albumIds(coverFor), label: coverFor.album });
+              }}
+            />
+            {coverFor.customArtwork ? (
+              <SheetItem
+                icon="restore"
+                label="Restaurar la original"
+                onPress={() => {
+                  const ids = albumIds(coverFor).filter((id) => trackById(useLibrary.getState(), id)?.customArtwork);
+                  useLibrary.getState().setCustomArtwork(ids.length ? ids : [coverFor.id], null);
+                  setCoverFor(null);
+                  showToast('Portada original restaurada');
+                }}
+              />
+            ) : null}
+          </>
         ) : null}
       </Sheet>
 

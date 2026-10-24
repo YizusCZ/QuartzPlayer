@@ -20,6 +20,7 @@ import { recoverPendingPick } from '@/lib/userMedia';
 import { TrackActions } from '@/components/TrackActions';
 import { NewPlaylistSheet } from '@/components/NewPlaylistSheet';
 import { Toast } from '@/components/Toast';
+import { TourOverlay } from '@/components/tour/Tour';
 import { colors, useAccent } from '@/theme';
 
 void SplashScreen.preventAutoHideAsync();
@@ -76,12 +77,23 @@ export default function RootLayout() {
                 contentStyle: { backgroundColor: 'transparent' },
               }}
             />
+            <Stack.Screen
+              name="jam"
+              // Transparent like the player: dragging the room down shows the app behind it.
+              options={{
+                presentation: 'transparentModal',
+                animation: 'slide_from_bottom',
+                gestureEnabled: false,
+                contentStyle: { backgroundColor: 'transparent' },
+              }}
+            />
             <Stack.Screen name="queue" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
             <Stack.Screen name="info" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
           </Stack>
           <TrackActions />
           <NewPlaylistSheet />
           <Toast />
+          <TourOverlay />
         </View>
       </SafeAreaProvider>
     </GestureHandlerRootView>

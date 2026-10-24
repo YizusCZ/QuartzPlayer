@@ -23,6 +23,8 @@ class Presence : Record {
   /** Unix epoch, ms. 0 = none. */
   @Field val startMs: Double = 0.0
   @Field val endMs: Double = 0.0
+  @Field val buttonLabel: String? = null
+  @Field val buttonUrl: String? = null
 }
 
 /** Native side of the Social SDK. Every method runs on the module's worker thread. */
@@ -37,7 +39,9 @@ class DiscordBridge(private val onResult: (Boolean, String) -> Unit) {
     smallImage: String?,
     smallText: String?,
     startMs: Long,
-    endMs: Long
+    endMs: Long,
+    buttonLabel: String?,
+    buttonUrl: String?
   )
   external fun nativeClear()
   external fun nativeRunCallbacks()
@@ -121,7 +125,8 @@ class DiscordPresenceModule : Module() {
       post {
         it.nativeUpdate(
           p.name, p.details, p.state, p.largeImage, p.largeText, p.smallImage, p.smallText,
-          p.startMs.toLong(), p.endMs.toLong()
+          p.startMs.toLong(), p.endMs.toLong(),
+          p.buttonLabel, p.buttonUrl
         )
       }
     }

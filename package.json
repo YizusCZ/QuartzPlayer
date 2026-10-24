@@ -13,6 +13,7 @@
     "@expo/vector-icons": "^15.0.2",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@shopify/react-native-skia": "2.6.2",
+    "@supabase/realtime-js": "2.117.2",
     "eslint-config-expo": "~57.0.2",
     "expo": "~57.0.25",
     "expo-asset": "~57.0.18",
