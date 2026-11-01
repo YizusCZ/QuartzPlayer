@@ -31,7 +31,14 @@ import { scheduleOnRN } from 'react-native-worklets';
 import { acquireAnalyzer, rearmAnalyzer, releaseAnalyzer, type AnalyzerMode } from '@/audio/analyzer';
 import { playbackTime } from '@/audio/clock';
 import { NIGHTCORE_RATE, Player, SLOWED_RATE, transport } from '@/audio/engine';
-import { downloadYt, useYtDownloads, ytInLibrary, type YtDownloadItem } from '@/catalog/ytDownloads';
+import {
+  confirmDeleteDownloads,
+  downloadYt,
+  useYtDownloads,
+  useYtInLibrary,
+  ytInLibrary,
+  type YtDownloadItem,
+} from '@/catalog/ytDownloads';
 import { clearFx, FX, FX_PRESETS, fxSupported, toggleFx } from '@/audio/fx';
 import { CassetteAOD } from '@/components/cassette/CassetteAOD';
 import { CassetteView } from '@/components/cassette/CassetteView';
@@ -44,7 +51,7 @@ import { Txt } from '@/components/ui/Txt';
 import { ScopeView } from '@/components/visualizers/ScopeView';
 import { MotionCover, prefetchYouTubeVideo, VideoStage } from '@/components/visualizers/VideoStage';
 import { HelpButton, TourTarget, useTourActive, useTourRef } from '@/components/tour/Tour';
-import { useJam } from '@/jam/store';
+import { songHidden, useGame, useJam } from '@/jam/store';
 import { Marquee } from '@/components/ui/Marquee';
 import type { SearchFilter } from '@/youtube/YouTubeHome';
 import { LyricsView } from '@/components/visualizers/LyricsView';
@@ -77,20 +84,21 @@ const SLEEP = [15, 30, 45, 60, 90];
 function PlayerDownloadButton({ track }: { track: Track }) {
   const videoId = track.uri.replace(/^yt:/, '');
   const dlState = useYtDownloads((s) => s.items[videoId]);
-  useYtDownloads((s) => s.downloaded);
-  const inLib = !!ytInLibrary(videoId);
+  const inLib = useYtInLibrary(videoId);
   const isDone = inLib || dlState?.status === 'done';
-  const isBusy = !inLib && (dlState?.status === 'downloading' || dlState?.status === 'resolving' || dlState?.status === 'queued');
+  const isBusy =
+    !inLib && (dlState?.status === 'downloading' || dlState?.status === 'resolving' || dlState?.status === 'queued');
   const showToast = useUI((s) => s.showToast);
+  const pct = dlState?.status === 'downloading' && dlState.progress != null ? Math.round(dlState.progress * 100) : null;
 
   const handlePress = () => {
     if (isDone) {
-      showToast('Ya está guardada en tu biblioteca local');
       tap('select');
+      confirmDeleteDownloads([videoId], { title: track.title, artwork: track.artwork });
       return;
     }
     if (isBusy) {
-      showToast('Guardando en tu biblioteca local…');
+      showToast(pct != null ? `Guardando en tu biblioteca… ${pct}%` : 'Guardando en tu biblioteca local…');
       return;
     }
     tap('medium');
@@ -115,7 +123,13 @@ function PlayerDownloadButton({ track }: { track: Track }) {
         accessibilityRole="button"
         accessibilityLabel="Guardando en tu biblioteca local"
       >
-        <ActivityIndicator size="small" color={colors.accent} />
+        {pct != null ? (
+          <Txt variant="mono" style={{ color: colors.accent }}>
+            {pct}%
+          </Txt>
+        ) : (
+          <ActivityIndicator size="small" color={colors.accent} />
+        )}
       </Pressable>
     );
   }
@@ -124,14 +138,49 @@ function PlayerDownloadButton({ track }: { track: Track }) {
     <IconButton
       icon={isDone ? 'check-circle' : 'download'}
       color={isDone ? colors.accent : colors.text}
-      label={isDone ? 'Guardada en tu biblioteca' : 'Guardar en biblioteca local'}
+      label={isDone ? 'Guardada en tu biblioteca: tocar para quitarla' : 'Guardar en biblioteca local'}
       size={24}
       onPress={handlePress}
     />
   );
 }
 
+/** Guess the song in a room: the player would give the answer away. */
 export default function PlayerScreen() {
+  const hidden = useGame((s) => songHidden(s.game));
+  return hidden ? <HiddenSong /> : <PlayerView />;
+}
+
+function HiddenSong() {
+  useAccent();
+  return (
+    <View style={hiddenStyles.wrap}>
+      <Icon name="help-circle" size={64} color={colors.accent} />
+      <Txt variant="title" style={{ textAlign: 'center' }}>
+        Canción misteriosa
+      </Txt>
+      <Txt variant="caption" style={{ textAlign: 'center' }}>
+        Estás jugando Adivina la canción: el reproductor vuelve cuando se revele.
+      </Txt>
+      <Pressable
+        onPress={() => router.back()}
+        style={[hiddenStyles.btn, { backgroundColor: colors.accent }]}
+        accessibilityRole="button"
+      >
+        <Txt variant="bodyStrong" style={{ color: colors.onAccent }}>
+          Volver a la sala
+        </Txt>
+      </Pressable>
+    </View>
+  );
+}
+
+const hiddenStyles = StyleSheet.create({
+  wrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32, backgroundColor: colors.bg },
+  btn: { marginTop: 8, paddingHorizontal: 28, height: 50, borderRadius: 25, justifyContent: 'center' },
+});
+
+function PlayerView() {
   useAccent();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
@@ -747,46 +796,48 @@ export default function PlayerScreen() {
       </Sheet>
       <Sheet visible={sheet === 'more'} onClose={() => setSheet('none')}>
         <SheetTitle sub={track.artist}>{track.title}</SheetTitle>
-        {track.source === 'youtube' ? (() => {
-          const videoId = track.uri.replace(/^yt:/, '');
-          const inLib = !!ytInLibrary(videoId);
-          const isDone = inLib || useYtDownloads.getState().items[videoId]?.status === 'done';
-          const isBusy =
-            !inLib &&
-            (useYtDownloads.getState().items[videoId]?.status === 'downloading' ||
-              useYtDownloads.getState().items[videoId]?.status === 'resolving' ||
-              useYtDownloads.getState().items[videoId]?.status === 'queued');
-          return (
-            <SheetItem
-              icon={isDone ? 'check-circle' : isBusy ? 'progress-download' : 'download'}
-              label={
-                isDone
-                  ? 'Guardada en la biblioteca local'
-                  : isBusy
-                    ? 'Guardando en la biblioteca…'
-                    : 'Guardar en biblioteca local'
-              }
-              onPress={() => {
-                setSheet('none');
-                if (isDone) {
-                  useUI.getState().showToast('Ya está guardada en tu biblioteca local');
-                } else if (!isBusy) {
-                  downloadYt([
-                    {
-                      videoId,
-                      title: track.title,
-                      artist: track.artist,
-                      album: track.album,
-                      thumbnail: track.artwork,
-                      duration: track.duration,
-                    },
-                  ]);
-                  useUI.getState().showToast('Guardando en tu biblioteca local…');
-                }
-              }}
-            />
-          );
-        })() : null}
+        {track.source === 'youtube'
+          ? (() => {
+              const videoId = track.uri.replace(/^yt:/, '');
+              const inLib = !!ytInLibrary(videoId);
+              const isDone = inLib || useYtDownloads.getState().items[videoId]?.status === 'done';
+              const isBusy =
+                !inLib &&
+                (useYtDownloads.getState().items[videoId]?.status === 'downloading' ||
+                  useYtDownloads.getState().items[videoId]?.status === 'resolving' ||
+                  useYtDownloads.getState().items[videoId]?.status === 'queued');
+              return (
+                <SheetItem
+                  icon={isDone ? 'check-circle' : isBusy ? 'progress-download' : 'download'}
+                  label={
+                    isDone
+                      ? 'Guardada en la biblioteca local'
+                      : isBusy
+                        ? 'Guardando en la biblioteca…'
+                        : 'Guardar en biblioteca local'
+                  }
+                  onPress={() => {
+                    setSheet('none');
+                    if (isDone) {
+                      useUI.getState().showToast('Ya está guardada en tu biblioteca local');
+                    } else if (!isBusy) {
+                      downloadYt([
+                        {
+                          videoId,
+                          title: track.title,
+                          artist: track.artist,
+                          album: track.album,
+                          thumbnail: track.artwork,
+                          duration: track.duration,
+                        },
+                      ]);
+                      useUI.getState().showToast('Guardando en tu biblioteca local…');
+                    }
+                  }}
+                />
+              );
+            })()
+          : null}
         <SheetItem
           icon="information-outline"
           label="Información técnica"

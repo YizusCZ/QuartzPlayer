@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { DownloadsButton } from '@/components/DownloadsSheet';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
 import { TourTarget } from '@/components/tour/Tour';
 import { Icon } from '@/components/ui/Icon';
@@ -20,6 +21,7 @@ import { tap } from '@/lib/haptics';
 import { friendlyError } from '@/lib/net';
 import { colors, fonts, useAccent } from '@/theme';
 import { SectionView } from './components';
+import { forYou } from './forYou';
 import {
   browse,
   home,
@@ -92,7 +94,22 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
   const [found, setFound] = useState<Found | null>(null);
   const [suggested, setSuggested] = useState<{ q: string; items: string[] } | null>(null);
   const [chips, setChips] = useState<YtChip[]>([]);
+  const [personal, setPersonal] = useState<YtSection | null>(null);
   const key = chip ? chip.title : 'all';
+
+  // Yours, on top of what YouTube suggests to everyone. Waits for the home page: it is the extra.
+  const homeReady = !!page;
+  useEffect(() => {
+    if (!homeReady) return;
+    const ctrl = new AbortController();
+    forYou(ctrl.signal)
+      .then((items) => {
+        if (!ctrl.signal.aborted && items.length)
+          setPersonal({ title: 'Para ti', strapline: 'Según lo que escuchas', items });
+      })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, [homeReady]);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -193,10 +210,13 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
   const hints = recentSuggestions.get(typed.toLowerCase()) ?? (suggested?.q === typed ? suggested.items : []);
 
   const sections = useMemo(() => {
-    if (!(searching && query)) return page?.key === key ? page.sections : [];
+    if (!(searching && query)) {
+      const shelves = page?.key === key ? page.sections : [];
+      return personal && !chip && shelves.length ? [personal, ...shelves] : shelves;
+    }
     const all = results?.sections ?? [];
     return filter === 'Todo' ? all : all.filter((x) => x.title === filter);
-  }, [searching, query, results, page, key, filter]);
+  }, [searching, query, results, page, key, filter, personal, chip]);
   // The last results stay up while the next ones load: no blank flashes.
   const stale = !!query && results?.query.toLowerCase() !== query.toLowerCase();
   const busy = searching && !!query && (stale || !!results?.pending);
@@ -225,12 +245,15 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
           </View>
         ) : (
           <View style={{ flex: 1 }}>
-            <Txt variant="caption">{greeting()}</Txt>
-            <Txt variant="title" style={embedded && { fontSize: 19 }}>
+            <Txt variant="caption" numberOfLines={1}>
+              {greeting()}
+            </Txt>
+            <Txt variant="title" numberOfLines={1} style={embedded && { fontSize: 19 }}>
               {embedded ? 'Explora YouTube Music' : 'YouTube Music'}
             </Txt>
           </View>
         )}
+        {embedded ? null : <DownloadsButton />}
         <TourTarget id="yt.search">
           <IconButton
             icon={searching ? 'close' : 'magnify'}
@@ -246,7 +269,12 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
 
       {!searching && chips.length ? (
         <TourTarget id="yt.chips">
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.strip}
+            contentContainerStyle={styles.chips}
+          >
             {[null, ...chips].map((c) => {
               const on = (c?.title ?? null) === (chip?.title ?? null);
               return (
@@ -271,7 +299,8 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.chips}
+          style={styles.strip}
+          contentContainerStyle={styles.hints}
           keyboardShouldPersistTaps="handled"
         >
           {hints
@@ -300,7 +329,12 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
       ) : null}
 
       {searching && query ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chips}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.strip}
+          contentContainerStyle={styles.filters}
+        >
           {FILTERS.map((f) => {
             const on = f === filter;
             return (
@@ -325,7 +359,8 @@ export function YouTubeHome({ embedded, listHeader, initialQuery, initialFilter 
         keyExtractor={(s, i) => `${s.title}${i}`}
         renderItem={({ item }) => (
           <SectionView
-            section={item}
+            // With a filter on, the chip already names the shelf.
+            section={searching && filter !== 'Todo' ? { ...item, title: '' } : item}
             list={searching && (item.title === 'Canciones' || item.title === 'Vídeos' || filter !== 'Todo')}
           />
         )}
@@ -363,7 +398,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface2,
   },
   input: { flex: 1, color: colors.text, fontFamily: fonts.regular, fontSize: 15 },
+  // A horizontal ScrollView grows to fill the column by default (flexGrow: 1),
+  // stealing height from the results below: these strips keep their own size.
+  strip: { flexGrow: 0, flexShrink: 0 },
   chips: { gap: 8, paddingHorizontal: 16, paddingBottom: 6 },
+  hints: { gap: 8, paddingHorizontal: 16, paddingTop: 2, paddingBottom: 14 },
+  filters: { gap: 8, paddingHorizontal: 16, paddingBottom: 8 },
   suggestion: {
     flexDirection: 'row',
     alignItems: 'center',

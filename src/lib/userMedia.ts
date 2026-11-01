@@ -32,6 +32,9 @@ function dir(name: 'covers' | 'videos' | 'stickers'): Directory {
   return d;
 }
 
+/** Where list and song covers are kept (Documents/covers). */
+export const coversDir = () => dir('covers');
+
 function keep(
   uri: string,
   folder: 'covers' | 'videos' | 'stickers',

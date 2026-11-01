@@ -1,4 +1,19 @@
 import { create } from 'zustand';
+import type { IconName } from '@/components/ui/Icon';
+
+/** A question for the global confirmation dialog. */
+export type ConfirmRequest = {
+  title: string;
+  message?: string;
+  /** Label of the confirming button (default "Aceptar"). */
+  confirmLabel?: string;
+  icon?: IconName;
+  /** Cover shown at the top, with the icon pinned to its corner. */
+  artwork?: string;
+  /** Red confirming button, for actions that delete something. */
+  destructive?: boolean;
+  onConfirm: () => void;
+};
 
 type UI = {
   /** Track whose action sheet is open. */
@@ -9,11 +24,18 @@ type UI = {
   addToPlaylist: string[] | null;
   /** Open "Nueva lista" sheet, with the songs it should start with (empty: none). */
   newPlaylist: string[] | null;
+  /** The "Importar de otra app" sheet is open. */
+  importOpen: boolean;
   /** Track whose "Cambiar portada" sheet is open. */
   coverFor: string | null;
   toast: string | null;
+  /** Open confirmation dialog. */
+  confirm: ConfirmRequest | null;
+  askConfirm: (req: ConfirmRequest) => void;
+  closeConfirm: () => void;
   openCover: (id: string | null) => void;
   openNewPlaylist: (ids?: string[]) => void;
+  openImport: (open?: boolean) => void;
   openActions: (id: string, ctx?: { playlistId: string; index: number }) => void;
   close: () => void;
   pickPlaylist: (ids: string[]) => void;
@@ -27,10 +49,15 @@ export const useUI = create<UI>()((set) => ({
   actionsCtx: null,
   addToPlaylist: null,
   newPlaylist: null,
+  importOpen: false,
   coverFor: null,
   toast: null,
+  confirm: null,
+  askConfirm: (confirm) => set({ confirm }),
+  closeConfirm: () => set({ confirm: null }),
   openCover: (coverFor) => set({ coverFor }),
   openNewPlaylist: (ids = []) => set({ actionsFor: null, addToPlaylist: null, newPlaylist: ids }),
+  openImport: (importOpen = true) => set({ actionsFor: null, importOpen }),
   openActions: (id, ctx) => set({ actionsFor: id, actionsCtx: ctx ?? null }),
   close: () => set({ actionsFor: null, addToPlaylist: null, newPlaylist: null }),
   pickPlaylist: (ids) => set({ actionsFor: null, addToPlaylist: ids }),

@@ -16,6 +16,7 @@ import { Player } from '@/audio/engine';
 import { importFiles, scanLibrary } from '@/library/scanner';
 import { groupTracks, totalDuration } from '@/library/selectors';
 import type { Track } from '@/library/types';
+import { DownloadsButton } from '@/components/DownloadsSheet';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
 import { HelpButton, TourTarget, useTourRef, useTourScroll } from '@/components/tour/Tour';
 import { Artwork } from '@/components/ui/Artwork';
@@ -53,25 +54,29 @@ export default function Home() {
   const showToast = useUI((s) => s.showToast);
 
   const tracks = useMemo(() => Object.values(tracksMap), [tracksMap]);
-  const data = useMemo(() => {
+  // Grouping the whole library is the expensive part: only when the songs change, not on every play.
+  const groups = useMemo(() => {
     const albums = groupTracks(tracks, 'albums');
     const newest = (g: { tracks: Track[] }) => g.tracks.reduce((m, t) => Math.max(m, t.addedAt), 0);
-    const recentAlbums = [...albums].sort((a, b) => newest(b) - newest(a)).slice(0, 12);
-    // Both libraries: your files and the YouTube songs you played.
-    const recent = [...tracks, ...Object.values(remote)]
-      .filter((t) => plays[t.id])
-      .sort((a, b) => plays[b.id].last - plays[a.id].last)
-      .slice(0, 12);
     return {
       hours: totalDuration(tracks) / 3600,
       albums: albums.length,
       artists: groupTracks(tracks, 'artists').length,
       genres: groupTracks(tracks, 'genres').length,
       folders: groupTracks(tracks, 'folders').length,
-      recentAlbums,
-      recent,
+      recentAlbums: [...albums].sort((a, b) => newest(b) - newest(a)).slice(0, 12),
     };
-  }, [tracks, remote, plays]);
+  }, [tracks]);
+  const recent = useMemo(
+    () =>
+      // Both libraries: your files and the YouTube songs you played.
+      [...tracks, ...Object.values(remote)]
+        .filter((t) => plays[t.id])
+        .sort((a, b) => plays[b.id].last - plays[a.id].last)
+        .slice(0, 12),
+    [tracks, remote, plays],
+  );
+  const data = { ...groups, recent };
 
   const onImport = async () => {
     const n = await importFiles();
@@ -127,18 +132,24 @@ export default function Home() {
   const headerBar = (
     <View style={styles.header}>
       <Image source={LOGO} style={styles.logo} tintColor={colors.accent} contentFit="contain" />
-      <Txt style={[styles.wordmark, { flex: 1 }]}>QUARTZ</Txt>
-      {/* Library search only; YouTube Music has its own search in its tab. */}
-      {tab === 'local' ? (
-        <TourTarget id="home.search">
-          <IconButton icon="magnify" label="Buscar" onPress={() => router.push('/search')} />
+      {/* One line that shrinks to fit: the download button comes and goes beside it. */}
+      <Txt style={styles.wordmark} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+        QUARTZ
+      </Txt>
+      <View style={styles.headerIcons}>
+        {/* Library search only; YouTube Music has its own search in its tab. */}
+        {tab === 'local' ? (
+          <TourTarget id="home.search">
+            <IconButton icon="magnify" label="Buscar" onPress={() => router.push('/search')} />
+          </TourTarget>
+        ) : null}
+        <DownloadsButton />
+        <IconButton icon="account-group-outline" label="Salas" onPress={() => router.push('/jam')} />
+        <HelpButton tour={tab === 'local' ? 'home' : 'youtube'} />
+        <TourTarget id="home.settings">
+          <IconButton icon="cog-outline" label="Ajustes" onPress={() => router.push('/settings')} />
         </TourTarget>
-      ) : null}
-      <IconButton icon="account-group-outline" label="Salas" onPress={() => router.push('/jam')} />
-      <HelpButton tour={tab === 'local' ? 'home' : 'youtube'} />
-      <TourTarget id="home.settings">
-        <IconButton icon="cog-outline" label="Ajustes" onPress={() => router.push('/settings')} />
-      </TourTarget>
+      </View>
     </View>
   );
   const tabsBar = (
@@ -282,19 +293,37 @@ export default function Home() {
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={styles.carousel}
                     ListHeaderComponent={
-                      <Pressable
-                        style={{ width: 138 }}
-                        onPress={() => useUI.getState().openNewPlaylist()}
-                        accessibilityRole="button"
-                        accessibilityLabel="Nueva lista"
-                      >
-                        <View style={styles.newList}>
-                          <Icon name="plus" size={40} color={colors.accent} />
-                        </View>
-                        <Txt variant="bodyStrong" numberOfLines={1} style={{ marginTop: 8 }}>
-                          Nueva lista
-                        </Txt>
-                      </Pressable>
+                      <View style={{ flexDirection: 'row', gap: 12 }}>
+                        <Pressable
+                          style={{ width: 138 }}
+                          onPress={() => useUI.getState().openNewPlaylist()}
+                          accessibilityRole="button"
+                          accessibilityLabel="Nueva lista"
+                        >
+                          <View style={styles.newList}>
+                            <Icon name="plus" size={40} color={colors.accent} />
+                          </View>
+                          <Txt variant="bodyStrong" numberOfLines={1} style={{ marginTop: 8 }}>
+                            Nueva lista
+                          </Txt>
+                        </Pressable>
+                        <Pressable
+                          style={{ width: 138 }}
+                          onPress={() => useUI.getState().openImport()}
+                          accessibilityRole="button"
+                          accessibilityLabel="Importar lista de otra app"
+                        >
+                          <View style={styles.newList}>
+                            <Icon name="playlist-plus" size={40} color={colors.accent} />
+                          </View>
+                          <Txt variant="bodyStrong" numberOfLines={1} style={{ marginTop: 8 }}>
+                            Importar lista
+                          </Txt>
+                          <Txt variant="caption" numberOfLines={1}>
+                            Spotify, Apple Music…
+                          </Txt>
+                        </Pressable>
+                      </View>
                     }
                     renderItem={({ item }) => {
                       const count = item.trackIds.filter((id) => tracksMap[id] ?? remote[id]).length;
@@ -511,8 +540,9 @@ function EmptyLibrary({ scanning, message, onImport }: { scanning: boolean; mess
 
 const styles = StyleSheet.create({
   header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, marginBottom: 14 },
-  logo: { width: 30, height: 36 },
-  wordmark: { fontFamily: fonts.brand, fontSize: 19, color: colors.text, letterSpacing: 2 },
+  logo: { width: 30, height: 36, flexShrink: 0 },
+  wordmark: { flex: 1, minWidth: 0, fontFamily: fonts.brand, fontSize: 19, color: colors.text, letterSpacing: 2 },
+  headerIcons: { flexDirection: 'row', alignItems: 'center', flexShrink: 0, marginRight: -6 },
 
   chips: { gap: 8, paddingHorizontal: 16, paddingVertical: 16 },
   chip: {

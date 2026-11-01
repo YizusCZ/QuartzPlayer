@@ -28,6 +28,10 @@
  * them running while you are in one. A dropped connection reconnects on its
  * own, and someone who vanishes gets a grace period before counting as gone.
  * When the host leaves, the member who joined first carries the room on.
+ *
+ * Games (src/jam/games.ts) plug in as a room extension: they get their own
+ * messages and drive the host's player while they last; meanwhile nobody's
+ * taps change the music.
  */
 import { AppState } from 'react-native';
 import { RealtimeClient, type RealtimeChannel } from '@supabase/realtime-js';
@@ -37,8 +41,10 @@ import type { Track } from '@/library/types';
 import { trackById, useLibrary } from '@/store/library';
 import { usePlayer } from '@/store/player';
 import { useUI } from '@/store/ui';
-import { radio, toTrack } from '@/youtube/music';
-import { useJam, useJamProfile } from './store';
+import { days, isOneSong, mergeRanked, pick, weightedSample, type PoolSong } from '@/lib/songPicker';
+import { useSongHistory } from '@/store/songHistory';
+import { radio, toTrack, type YtSong } from '@/youtube/music';
+import { useGame, useJam, useJamProfile } from './store';
 import {
   RADIO_BY,
   type ChatMessage,
@@ -58,7 +64,7 @@ export const jamAvailable = !!(URL && KEY);
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 /** Host: clock every second; the full state now and then, in case one got lost. */
 const CLOCK_MS = 1000;
-const STATE_REFRESH_MS = 10_000;
+const STATE_REFRESH_MS = 20_000;
 /** Guest: how often the gap to the host is checked. */
 const CHECK_MS = 250;
 /** Past this gap (s) a guest seeks; below it, it only changes speed. */
@@ -74,7 +80,15 @@ const GAP_SAMPLES = 3;
 /** Ping round trips kept, and how many of the fastest are trusted. */
 const PING_SAMPLES = 24;
 const PING_BEST = 5;
-const JOIN_TIMEOUT_MS = 9000;
+/** Ping often until the offset is settled, then rarely: each pong reaches every phone in the room. */
+const PING_FAST_MS = 2000;
+const PING_SLOW_MS = 6000;
+const PING_SETTLED = 10;
+/** A guest whose gap stays this small looks again after this long, not every CHECK_MS. */
+const STEADY_CHECK_MS = 1000;
+/** How often a guest with no room yet asks the host for it. */
+const HELLO_RETRY_MS = 1000;
+const JOIN_TIMEOUT_MS = 12_000;
 /** Someone who vanished without saying goodbye still counts as here for this long. */
 const GRACE_MS = 25_000;
 const RADIO_COLOR = '#9B7BFF';
@@ -91,6 +105,7 @@ let leaving = false;
 // host
 let version = 0;
 let mode: RoomMode = 'dj';
+const RADIO_SONGS = 4;
 let radioOn = true;
 let fairOn = true;
 const meta = new Map<string, RoomTrack>();
@@ -115,6 +130,9 @@ let lastDriftShown = 0;
 /** When the host was last heard from (state or clock). */
 let heardHostAt = 0;
 let helloAt = 0;
+let lastPingAt = 0;
+/** No need to read the player before this (the gap was steady). */
+let nextCheckAt = 0;
 /** What you were listening to before the room, given back (paused) when you leave. */
 let before: { queue: string[]; index: number; pos: number } | null = null;
 // presence
@@ -128,6 +146,22 @@ const me = () => useJamProfile.getState();
 const toast = (m: string) => useUI.getState().showToast(m);
 const isYt = (id: string) => id.startsWith('yt:');
 const isHost = () => useJam.getState().isHost;
+const inGame = () => !!useGame.getState().game;
+const GAME_BUSY = 'Hay un juego en curso: la música de la sala vuelve al terminarlo';
+
+/** A room add-on (games): its own messages, and the moments it must react to. */
+export type RoomExtension = {
+  onMessage(event: string, payload: unknown): void;
+  /** Someone asked the host for everything (just joined, or came back). */
+  onHello(): void;
+  /** This phone just became the host. */
+  onBecomeHost(): void;
+  onLeave(): void;
+};
+let ext: RoomExtension | null = null;
+export function setRoomExtension(e: RoomExtension) {
+  ext = e;
+}
 
 function getClient() {
   if (!client) {
@@ -152,9 +186,34 @@ export const normalizeCode = (c: string) =>
     .replace(/[^A-Z0-9]/g, '')
     .slice(0, 6);
 
+/**
+ * Messages that must arrive even after a dropped connection; the rest (clock,
+ * ping, state…) are refreshed on their own, so they are simply skipped then.
+ */
+const KEEP = new Set(['chat', 'react', 'cmd', 'gcmd']);
+let outbox: { event: string; payload: object }[] = [];
+
+/**
+ * Over the room's socket only: while it is not ready the library would turn
+ * each message into an HTTP request, which also cannot reach us back.
+ */
 function send(event: string, payload: object) {
-  void channel?.send({ type: 'broadcast', event, payload });
+  if (!channel) return;
+  if (channel.state !== 'joined' || !client?.isConnected()) {
+    if (KEEP.has(event)) outbox = [...outbox, { event, payload }].slice(-30);
+    return;
+  }
+  void channel.send({ type: 'broadcast', event, payload });
 }
+
+function flushOutbox() {
+  const pending = outbox;
+  outbox = [];
+  for (const m of pending) send(m.event, m.payload);
+}
+
+/** For room extensions: send to everyone else in the room. */
+export const roomSend = send;
 
 /* ───────── tracks ───────── */
 
@@ -242,6 +301,7 @@ function hostState(): RoomState {
     queue,
     index: Math.min(s.index, Math.max(0, queue.length - 1)),
     skip: [...skip],
+    gameOn: inGame(),
     clock: hostClock(),
   };
 }
@@ -304,7 +364,11 @@ function chatSystem(text: string) {
   send('chat', msg);
 }
 
+/** For room extensions: a line from the room itself in everyone's chat. */
+export const roomAnnounce = (text: string) => chatSystem(text);
+
 function handleCommand(from: string, c: Command) {
+  if (inGame()) return;
   const can = mode === 'all' || from === me().id;
   const s = usePlayer.getState();
   switch (c.type) {
@@ -368,6 +432,10 @@ function handleCommand(from: string, c: Command) {
 
 /** Your own taps while hosting: everything goes, except what would split the room. */
 function hostController(command: string, args: unknown[]): boolean {
+  if (inGame()) {
+    toast(GAME_BUSY);
+    return true;
+  }
   if (command === 'setRate' || command === 'setNightcore' || command === 'setSlowed') {
     toast('En una sala la velocidad no cambia, para que todos sigan juntos');
     return true;
@@ -396,15 +464,40 @@ function hostController(command: string, args: unknown[]): boolean {
   return false;
 }
 
+/**
+ * The radio of the song playing and of up to two other songs from this room,
+ * so it follows the room and not just the last song. Nothing the room already
+ * heard; what you heard in other days only if nothing else is left.
+ */
+async function radioPicks(current: string): Promise<YtSong[]> {
+  const others = weightedSample(
+    [...heard].filter((id) => id !== current && isYt(id)).map((item) => ({ item, weight: 1 })),
+    2,
+  );
+  const lists = await Promise.all([current, ...others].map((id) => radio(id.slice(3)).catch(() => [] as YtSong[])));
+  if (!lists[0].length && !lists.some((l) => l.length)) throw new Error('sin radio');
+  const byId = new Map(lists.flat().map((x) => [x.videoId, x]));
+  const { plays } = useLibrary.getState();
+  const history = useSongHistory.getState().heard;
+  const pool = mergeRanked(lists as PoolSong[][]).filter((x) => !heard.has(`yt:${x.videoId}`) && isOneSong(x));
+  return pick(pool, RADIO_SONGS, {
+    lastHeard: (id) => Math.max(plays[`yt:${id}`]?.last ?? 0, history[id] ?? 0) || undefined,
+    now: Date.now(),
+    maxPerArtist: 1,
+    freshAfterMs: days(14),
+    randomness: 0.3,
+  }).flatMap((x) => byId.get(x.videoId) ?? []);
+}
+
 /** Keeps the room going: when the last song is playing, queue up the radio for it. */
 async function topUpRadio() {
-  if (!isHost() || !radioOn) return;
+  if (!isHost() || !radioOn || inGame()) return;
   const s = usePlayer.getState();
   const current = s.queue[s.index];
   if (!current || !isYt(current) || s.index < s.queue.length - 1 || radioFor === current) return;
   radioFor = current;
   try {
-    const songs = (await radio(current.slice(3))).filter((x) => !heard.has(`yt:${x.videoId}`)).slice(0, 4);
+    const songs = await radioPicks(current);
     const now = usePlayer.getState();
     if (!isHost() || !songs.length || now.queue[now.queue.length - 1] !== current) return;
     const tracks = songs.map((x) => toTrack(x));
@@ -423,12 +516,15 @@ function onHostPlayer(s: ReturnType<typeof usePlayer.getState>, prev: ReturnType
   const changed = id !== prev.queue[prev.index];
   if (changed) {
     skip = new Set();
-    if (id) heard.add(id);
+    if (id) {
+      heard.add(id);
+      if (isYt(id)) useSongHistory.getState().note(id.slice(3));
+    }
   }
   // Play, pause, buffering and song changes move the clock: tell the room now.
   if (changed || s.playing !== prev.playing || s.buffering !== prev.buffering) sendClock();
   if (s.queue !== prev.queue || s.index !== prev.index) scheduleState(40);
-  if (changed && id && announced !== id) {
+  if (changed && id && announced !== id && !inGame()) {
     announced = id;
     const r = meta.get(id);
     if (r) chatSystem(r.by === RADIO_BY ? `Suena “${r.title}”` : `Suena “${r.title}”, elegida por ${r.by}`);
@@ -477,9 +573,13 @@ function becomeHost(from: RoomState | null) {
   timers.push(setInterval(sendState, STATE_REFRESH_MS));
   timers.push(setInterval(sweepAway, 5000));
   sendState();
+  ext?.onBecomeHost();
 }
 
 /* ───────── guest ───────── */
+
+/** Now on the host's clock (ms): what room deadlines are written in. */
+export const roomNow = () => (isHost() ? Date.now() : Date.now() + offset);
 
 /** Where the host is at `now` (our clock, ms), from its last clock. */
 function hostNow(c: Clock, now = Date.now()) {
@@ -490,6 +590,7 @@ function hostNow(c: Clock, now = Date.now()) {
 /** Forgets the recent gaps and waits a moment before correcting again. */
 function settle(ms: number) {
   gaps = [];
+  nextCheckAt = 0;
   holdUntil = Date.now() + ms;
 }
 
@@ -513,6 +614,8 @@ function applyState(st: RoomState) {
     reconnecting: false,
     ...(first ? { welcome: st.hostName || 'tu amigo' } : null),
   });
+  // The message that ended a game got lost: nothing else would close it here.
+  if (!st.gameOn && inGame()) useGame.setState({ game: null });
   remember(st.queue);
   applyClock(st.clock, true);
 }
@@ -522,9 +625,11 @@ function applyClock(c: Clock, fromState = false) {
   // Clocks can overtake the state that lists a new song: wait for that state.
   heardHostAt = Date.now();
   if (!fromState && last && c.id && last.queue[c.index]?.id !== c.id) return hello();
+  // Play, pause or a seek on the host: look right away, even if the gap was steady.
+  if (clock?.playing !== c.playing || clock?.id !== c.id) nextCheckAt = 0;
   clock = c;
   const st = last;
-  if (!st) return;
+  if (!st) return hello();
   const ids = st.queue.map((r) => r.id);
   const s = usePlayer.getState();
   const changed = s.queue[s.index] !== c.id;
@@ -541,6 +646,7 @@ function applyClock(c: Clock, fromState = false) {
 function correct() {
   const c = clock;
   if (!c || isHost() || !c.id) return;
+  if (Date.now() < nextCheckAt) return;
   if (!playerSettled(c.id)) return;
   const { pos: local, at } = reading();
   const s = usePlayer.getState();
@@ -577,6 +683,8 @@ function correct() {
   const d = [...gaps].sort((a, b) => a - b)[gaps.length >> 1];
   if (Math.abs(d) < DEAD_BAND) {
     setSyncRate(1);
+    // Steady: the player barely drifts at normal speed, so no native read 4× a second.
+    if (gaps.length === GAP_SAMPLES) nextCheckAt = Date.now() + STEADY_CHECK_MS;
   } else {
     // Proportional: the further off, the faster it closes (0.25 % steps, to avoid churn).
     const nudge = Math.max(-MAX_NUDGE, Math.min(MAX_NUDGE, -d * GAIN));
@@ -591,13 +699,24 @@ function correct() {
 
 /** Asks the host for the full state (at most every 2 s). */
 function hello() {
-  if (Date.now() - helloAt < 2000) return;
+  if (Date.now() - helloAt < (last ? 2000 : HELLO_RETRY_MS)) return;
   helloAt = Date.now();
   send('hello', { from: me().id });
 }
 
 function ping() {
-  send('ping', { from: me().id, t0: Date.now() });
+  lastPingAt = Date.now();
+  send('ping', { from: me().id, t0: lastPingAt });
+}
+
+function steadyPing() {
+  const every = samples.length >= PING_SETTLED ? PING_SLOW_MS : PING_FAST_MS;
+  if (Date.now() - lastPingAt >= every - 100) ping();
+}
+
+/** Until the host answers, keep asking: its first answer may come before we can hear it. */
+function askForRoom() {
+  if (!last) hello();
 }
 
 /** A quick burst of pings to (re)settle the clock offset. */
@@ -615,6 +734,10 @@ function onPong(p: { to: string; t0: number; th: number }) {
 }
 
 function guestController(command: string, args: unknown[]): boolean {
+  if (inGame()) {
+    toast(GAME_BUSY);
+    return true;
+  }
   const can = last?.mode === 'all';
   const add = (ids: string[], next = false) => {
     const lib = useLibrary.getState();
@@ -688,7 +811,8 @@ function startGuestTimers() {
   clearTimers();
   timers.push(setInterval(correct, CHECK_MS));
   // Keep the offset fresh (networks change, clocks drift).
-  timers.push(setInterval(ping, 2000));
+  timers.push(setInterval(steadyPing, PING_FAST_MS));
+  timers.push(setInterval(askForRoom, HELLO_RETRY_MS));
   timers.push(setInterval(sweepAway, 5000));
   timers.push(setInterval(checkHost, 2000));
   pingBurst();
@@ -702,7 +826,7 @@ const member = (host: boolean): Member => {
 };
 
 /** Who is connected right now (not the ones in their grace period). */
-const presentMembers = () => useJam.getState().members.filter((m) => !m.away);
+export const presentMembers = () => useJam.getState().members.filter((m) => !m.away);
 
 function onPresence() {
   if (!channel) return;
@@ -722,8 +846,11 @@ function onPresence() {
     const back = away.delete(m.id);
     gone.delete(m.id);
     // The host greets arrivals in the chat (only the host, so it is said once).
-    if (isHost() && !back && m.id !== me().id && !prev.some((x) => x.id === m.id))
+    if (isHost() && !back && m.id !== me().id && !prev.some((x) => x.id === m.id)) {
       chatSystem(`${m.name} se unió a la sala`);
+      // Now they can surely hear it.
+      scheduleState(100);
+    }
   }
   publishMembers(live);
 }
@@ -855,6 +982,7 @@ export const Jam = {
   /** Hands the room to another member. */
   handOver(to: string) {
     if (!isHost()) return;
+    if (inGame()) return toast('Termina el juego antes de pasar la sala');
     const st = hostState();
     send('handover', { to, state: st });
     const name = useJam.getState().members.find((m) => m.id === to)?.name ?? 'otro miembro';
@@ -897,6 +1025,10 @@ async function connect(code: string, host: boolean) {
   clock = null;
   samples = [];
   gaps = [];
+  outbox = [];
+  helloAt = 0;
+  lastPingAt = 0;
+  nextCheckAt = 0;
   offset = 0;
   lead = 0.35;
   away.clear();
@@ -915,7 +1047,13 @@ async function connect(code: string, host: boolean) {
   channel = ch;
   ch.on('broadcast', { event: 'state' }, ({ payload }) => applyState(payload as RoomState))
     .on('broadcast', { event: 'clock' }, ({ payload }) => applyClock(payload as Clock))
-    .on('broadcast', { event: 'hello' }, () => isHost() && sendState())
+    .on('broadcast', { event: 'hello' }, () => {
+      if (!isHost()) return;
+      sendState();
+      ext?.onHello();
+    })
+    .on('broadcast', { event: 'game' }, ({ payload }) => ext?.onMessage('game', payload))
+    .on('broadcast', { event: 'gcmd' }, ({ payload }) => ext?.onMessage('gcmd', payload))
     .on('broadcast', { event: 'cmd' }, ({ payload }) => {
       const p = payload as { from: string; cmd: Command };
       if (isHost()) handleCommand(p.from, p.cmd);
@@ -947,6 +1085,7 @@ async function connect(code: string, host: boolean) {
         }
         // Rejoined after a dropped connection: announce ourselves again and catch up.
         useJam.setState({ reconnecting: false });
+        flushOutbox();
         void ch.track(member(isHost()));
         if (isHost()) sendState();
         else {
@@ -972,11 +1111,17 @@ async function connect(code: string, host: boolean) {
   setController(guestController);
   startGuestTimers();
   hello();
-  joinTimer = setTimeout(() => {
+  const giveUp = () => {
     if (last) return;
+    // The host is in the room, its answer is on the way: a slow network is not an empty room.
+    if (useJam.getState().members.some((m) => m.host) && Date.now() - joinedAt < JOIN_TIMEOUT_MS * 2) {
+      joinTimer = setTimeout(giveUp, 3000);
+      return;
+    }
     useJam.setState({ status: 'error', error: 'No hay nadie en esa sala. Revisa el código.' });
     void leaveRoom(false);
-  }, JOIN_TIMEOUT_MS);
+  };
+  joinTimer = setTimeout(giveUp, JOIN_TIMEOUT_MS);
 }
 
 export async function createRoom() {
@@ -1012,6 +1157,7 @@ export async function leaveRoom(restore = true) {
   appStateSub?.remove();
   appStateSub = null;
   AudioRouteModule.keepAlive('room', false);
+  ext?.onLeave();
   const ch = channel;
   channel = null;
   if (ch) {

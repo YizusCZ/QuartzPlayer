@@ -20,9 +20,10 @@ import {
 import { useLibrary } from '@/store/library';
 import { useScan, type ScanState } from '@/store/scan';
 import { useSettings } from '@/store/settings';
+import { QuartzCore, type NativeMeta } from '../../modules/quartz-core';
 import { hash, type ByteSource } from './bytes';
-import { parseMetadata, type Picture } from './metadata';
-import type { Track } from './types';
+import { parseMetadata, type ParsedMeta, type Picture } from './metadata';
+import type { AudioFormat, Track } from './types';
 
 export const AUDIO_EXT = [
   'flac',
@@ -41,6 +42,8 @@ export const AUDIO_EXT = [
 ];
 const IGNORED_DIRS = /\/(notifications|ringtones|alarms|voice notes|recordings|call ?rec\w*|whatsapp audio)\//i;
 const SHORT_CLIP = 30;
+/** Files whose tags are read per round; progress and the UI get a turn in between. */
+const SCAN_BATCH = 24;
 
 const ext = (name: string) => name.split('.').pop()?.toLowerCase() ?? '';
 export const isAudioFile = (name: string) => AUDIO_EXT.includes(ext(name));
@@ -90,7 +93,7 @@ function prettyName(filename: string): { title: string; artist?: string } {
     .trim();
   const clean = base
     .replace(/^\d{1,3}[\s.\-_]+/, '')
-    .replace(/\s*\[[\w-]+\]$/, '')
+    .replace(/\s*[[(][\w-]{11}[\])]$/, '')
     .trim();
   const m = /^(.+?)\s+-\s+(.+)$/.exec(clean);
   return m ? { artist: m[1].trim(), title: m[2].trim() } : { title: clean };
@@ -115,9 +118,10 @@ function decodePath(uri: string): string {
   }
 }
 
-export function readTrack(c: Candidate & { uri: string }): Track {
-  const folder = decodePath(c.uri).replace(/\/[^/]*$/, '') || 'Música';
-  const isYt = folder === 'YouTube' || folder.endsWith('/YouTube');
+type Located = Candidate & { uri: string };
+
+/** Reads a file's tags on the JS thread. Batches of files go through `readTracks`. */
+export function readTrack(c: Located): Track {
   const src = fileSource(c.uri);
   let meta;
   try {
@@ -125,6 +129,46 @@ export function readTrack(c: Candidate & { uri: string }): Track {
   } finally {
     src.close();
   }
+  const picture = meta.picture;
+  return buildTrack(c, meta, src.size, (artist, album) =>
+    picture ? cacheArtwork(`${meta.albumArtist ?? artist}|${album}|${picture.data.length}`, picture) : undefined,
+  );
+}
+
+/** Several files at once, in Rust off the JS thread; any it cannot open is read the JS way. */
+async function readTracks(list: Located[]): Promise<(Track | null)[]> {
+  let found: (NativeMeta | null)[] = list.map(() => null);
+  const dir = artworkDir().uri.replace(/\/$/, '');
+  if (QuartzCore.available && list.every((c) => c.uri.startsWith('file://'))) {
+    try {
+      found = await QuartzCore.readTags(
+        list.map((c) => ({ path: decodePath(c.uri), name: c.filename })),
+        decodePath(dir),
+      );
+    } catch {
+      // the JS reader below handles them all
+    }
+  }
+  return list.map((c, i) => {
+    const m = found[i];
+    try {
+      if (!m) return readTrack(c);
+      const meta = { ...m, format: m.format as AudioFormat };
+      return buildTrack(c, meta, m.size, () => (m.picture ? `${dir}/${m.picture}` : undefined));
+    } catch {
+      return null;
+    }
+  });
+}
+
+function buildTrack(
+  c: Located,
+  meta: Omit<ParsedMeta, 'picture'>,
+  size: number,
+  embeddedArt: (artist: string, album: string) => string | undefined,
+): Track {
+  const folder = decodePath(c.uri).replace(/\/[^/]*$/, '') || 'Música';
+  const isYt = folder === 'YouTube' || folder.endsWith('/YouTube');
   const guess = prettyName(c.filename);
   const artist = meta.artist || guess.artist || 'Artista desconocido';
   const rawAlbum = meta.album;
@@ -132,15 +176,15 @@ export function readTrack(c: Candidate & { uri: string }): Track {
     rawAlbum && rawAlbum !== 'YouTube'
       ? rawAlbum
       : isYt
-        ? (artist !== 'Artista desconocido' ? `${artist} - Single` : 'Sencillo')
+        ? artist !== 'Artista desconocido'
+          ? `${artist} - Single`
+          : 'Sencillo'
         : folder.split('/').pop() || 'Álbum desconocido';
 
-  let artwork = meta.picture
-    ? cacheArtwork(`${meta.albumArtist ?? artist}|${album}|${meta.picture.data.length}`, meta.picture)
-    : undefined;
+  let artwork = embeddedArt(artist, album);
 
   if (!artwork && isYt) {
-    const vidMatch = /\[([\w-]+)\]/.exec(c.filename);
+    const vidMatch = /[[(]([\w-]{11})[\])]/.exec(c.filename);
     if (vidMatch?.[1]) {
       const cached = new File(artworkDir(), `${hash(vidMatch[1])}.jpg`);
       if (cached.exists) artwork = cached.uri;
@@ -160,7 +204,7 @@ export function readTrack(c: Candidate & { uri: string }): Track {
     trackNo: meta.trackNo,
     discNo: meta.discNo,
     duration: meta.duration || c.duration || 0,
-    size: src.size,
+    size,
     format: meta.format,
     artwork,
     addedAt: c.modified || Date.now(),
@@ -274,33 +318,38 @@ async function doScan(manual: boolean) {
     const removed = Object.keys(known).some((id) => !tracks[id]) && fresh.length === 0;
 
     if (fresh.length) setScan({ running: true, done: 0, total: fresh.length, message: 'Leyendo etiquetas…' });
-    for (let i = 0; i < fresh.length; i++) {
-      const c = fresh[i];
-      try {
-        const uri = c.uri ?? (await new Asset(c.assetId!).getUri());
-        if (IGNORED_DIRS.test(decodePath(uri))) {
+    for (let i = 0; i < fresh.length; i += SCAN_BATCH) {
+      const batch: Located[] = [];
+      for (const c of fresh.slice(i, i + SCAN_BATCH)) {
+        try {
+          const uri = c.uri ?? (await new Asset(c.assetId!).getUri());
+          if (IGNORED_DIRS.test(decodePath(uri))) skipped[c.id] = c.modified;
+          else batch.push({ ...c, uri });
+        } catch {
           skipped[c.id] = c.modified;
-          continue;
         }
-        const read = readTrack({ ...c, uri });
+      }
+      const read = await readTracks(batch);
+      batch.forEach((c, k) => {
+        const found = read[k];
+        // Unreadable (DRM, cloud placeholder, permissions): remember it so we do not retry every launch.
+        if (!found) {
+          skipped[c.id] = c.modified;
+          return;
+        }
         // A cover you chose survives the file being read again.
         const prevCustom = known[c.id]?.customArtwork;
         const track = prevCustom
-          ? { ...read, customArtwork: prevCustom, originalArtwork: read.artwork, artwork: prevCustom }
-          : read;
+          ? { ...found, customArtwork: prevCustom, originalArtwork: found.artwork, artwork: prevCustom }
+          : found;
         if (skipShort && track.source === 'device' && track.duration > 0 && track.duration < SHORT_CLIP) {
           skipped[c.id] = c.modified;
-          continue;
+          return;
         }
         tracks[c.id] = track;
-      } catch {
-        // Unreadable (DRM, cloud placeholder, permissions): remember it so we do not retry every launch.
-        skipped[c.id] = c.modified;
-      }
-      if (i % 8 === 7) {
-        setScan({ done: i + 1 });
-        await yieldToUI();
-      }
+      });
+      setScan({ done: Math.min(i + SCAN_BATCH, fresh.length) });
+      await yieldToUI();
     }
 
     const changed =

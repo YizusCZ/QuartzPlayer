@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import { Image } from 'expo-image';
@@ -15,6 +15,7 @@ import { useLibrary } from '@/store/library';
 import { PALETTES, useSettings, type PaletteId, type YtDownloadQuality } from '@/store/settings';
 import { ACCENTS, colors, radius, useAccent } from '@/theme';
 import { MODES } from '@/lib/modes';
+import { checkForUpdate, installedVersion, openUpdateSheet, useAppUpdate } from '@/lib/appUpdate';
 
 const DISCORD_STATUS: Record<DiscordStatus, string> = {
   off: 'Desactivado',
@@ -502,7 +503,8 @@ export default function Settings() {
                   : 'Opus hasta ~256 kbps (.opus) — La máxima calidad disponible sin pérdida adicional.'}
             </Txt>
             <Txt variant="caption" style={{ color: colors.textMute, fontSize: 11 }}>
-              Las canciones descargadas se guardan en tu biblioteca local (Documents/Music/YouTube) y se pueden escuchar sin conexión.
+              Las canciones descargadas se guardan en tu biblioteca local (Documents/Music/YouTube) y se pueden escuchar
+              sin conexión.
             </Txt>
           </View>
         </Section>
@@ -533,6 +535,7 @@ export default function Settings() {
 
         <Section title="GENERAL">
           <Toggle label="Respuesta háptica" value={s.haptics} onChange={(v) => s.set({ haptics: v })} />
+          <UpdateRow />
           <Pressable style={styles.row} onPress={() => router.push('/about')} accessibilityRole="button">
             <Icon name="shield-lock-outline" color={colors.accent} />
             <View style={{ flex: 1, gap: 2 }}>
@@ -560,6 +563,41 @@ export default function Settings() {
         </View>
       </ScrollView>
     </View>
+  );
+}
+
+/** "Actualizaciones": the installed version and a check on demand (src/lib/appUpdate.ts). */
+function UpdateRow() {
+  const status = useAppUpdate((u) => u.status);
+  const info = useAppUpdate((u) => u.info);
+  const error = useAppUpdate((u) => u.error);
+  const available = (status === 'available' || status === 'downloading' || status === 'ready') && info;
+  const detail = available
+    ? `Quartz ${info.version} está lista para instalar`
+    : status === 'checking'
+      ? 'Buscando…'
+      : status === 'latest'
+        ? `Tienes la última versión (${installedVersion()})`
+        : status === 'error'
+          ? `No se pudo revisar: ${error}`
+          : `Versión ${installedVersion() || Constants.expoConfig?.version || ''} · se revisa sola`;
+  return (
+    <Pressable
+      style={styles.row}
+      onPress={() => (available ? openUpdateSheet() : void checkForUpdate(true))}
+      accessibilityRole="button"
+    >
+      <Icon name={available ? 'cellphone-arrow-down' : 'update'} color={colors.accent} />
+      <View style={{ flex: 1, gap: 2 }}>
+        <Txt variant="bodyStrong">{available ? 'Actualización disponible' : 'Buscar actualizaciones'}</Txt>
+        <Txt variant="caption">{detail}</Txt>
+      </View>
+      {status === 'checking' ? (
+        <ActivityIndicator color={colors.accent} size="small" />
+      ) : (
+        <Icon name="chevron-right" color={colors.textMute} />
+      )}
+    </Pressable>
   );
 }
 

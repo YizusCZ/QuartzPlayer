@@ -3,7 +3,8 @@
  * each finished file is read like an imported one and enters the library
  * with the service's title, artist, album, cover and licence.
  */
-import { Directory, DownloadTask, File } from 'expo-file-system';
+import { Directory, File } from 'expo-file-system';
+import { createDownloadResumable } from 'expo-file-system/legacy';
 import { create } from 'zustand';
 import { hash } from '@/library/bytes';
 import { musicDir, readTrack } from '@/library/scanner';
@@ -38,7 +39,8 @@ function downloadsDir(): Directory {
 
 const safe = (s: string) =>
   s
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    // Strips URI-path-illegal chars too (see note in ytDownloads.ts safe()).
+    .replace(/[\\/:*?"<>|[\]{}#%^`\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80) || 'Canción';
@@ -72,14 +74,21 @@ async function run(t: CatalogTrack) {
   setItem(t.key, { status: 'downloading', progress: 0 });
   const file = target(t);
   try {
-    const task = new DownloadTask(t.downloadUrl, file, {
-      onProgress: ({ bytesWritten, totalBytes }) => {
-        const total = totalBytes > 0 ? totalBytes : (t.size ?? 0);
-        if (total > 0) setItem(t.key, { status: 'downloading', progress: Math.min(1, bytesWritten / total) });
+    // Legacy downloader: hands the URL straight to OkHttp instead of the strict
+    // java.net.URI the current API uses (which throws on some download links),
+    // while still reporting byte progress.
+    const task = createDownloadResumable(
+      t.downloadUrl,
+      file.uri,
+      {},
+      ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+        const total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : (t.size ?? 0);
+        if (total > 0) setItem(t.key, { status: 'downloading', progress: Math.min(1, totalBytesWritten / total) });
       },
-    });
-    const saved = await task.downloadAsync();
-    if (!saved) throw new Error('Descarga cancelada');
+    );
+    const result = await task.downloadAsync();
+    if (!result) throw new Error('Descarga cancelada');
+    const saved = new File(result.uri);
     const read = readTrack({
       id: `f:${hash(saved.uri)}`,
       uri: saved.uri,

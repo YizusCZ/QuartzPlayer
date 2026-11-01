@@ -30,7 +30,7 @@ index 992239b..5a68764 100644
  
    private fun isRawResource(uri: Uri): Boolean =
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index c76a9fd..6db8fc8 100644
+index c76a9fd..45113f9 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -12,7 +12,6 @@ import androidx.media3.common.PlaybackException
@@ -75,7 +75,7 @@ index c76a9fd..6db8fc8 100644
 -      }
 -    }
 +    // Quartz patch: buffering tuned for music (QuartzCache.loadControl).
-+    .setLoadControl(QuartzCache.loadControl(bufferDurationMs.toInt()))
++    .setLoadControl(QuartzCache.loadControl())
      .build(),
    appContext = appContext,
    updateInterval = updateInterval,
@@ -122,10 +122,10 @@ index 86880d9..d2953b3 100644
  enum class InterruptionMode(val value: String) : Enumerable {
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt
 new file mode 100644
-index 0000000..6b5ba72
+index 0000000..66a88bb
 --- /dev/null
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzCache.kt
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,116 @@
 +package expo.modules.audio
 +
 +import android.content.Context
@@ -153,23 +153,24 @@ index 0000000..6b5ba72
 + *    YouTube stream URLs are signed and change each time, so the cache key is
 + *    the stream itself (video, format, length), not the URL.
 + *  - `precache` fetches the first seconds of the next song into that cache
-+ *    a few seconds into the current one, so the next one starts instantly.
-+ *  - A load control tuned for music: starts after half a second of audio,
-+ *    keeps up to three minutes ahead and the last 15 s behind (small seeks
-+ *    back never hit the network).
++ *    near the end of the current one, so the next one starts instantly.
++ *  - A load control tuned for music: starts after half a second of audio and
++ *    reads in bursts between 20 and 60 s ahead, so the radio sleeps in between
++ *    and a skipped song wastes little. Seeks back come from the disk cache, so
++ *    only 5 s are kept in memory.
 + */
 +@UnstableApi
 +object QuartzCache {
 +  private const val MAX_BYTES = 256L * 1024 * 1024
-+  /** About 30 s of a 256 kbps stream. */
-+  private const val PRECACHE_BYTES = 1L * 1024 * 1024
++  /** About 16 s of a 256 kbps stream: enough to start at once while the rest loads. */
++  private const val PRECACHE_BYTES = 512L * 1024
 +
 +  @Volatile
 +  private var cache: SimpleCache? = null
 +  private val worker =
 +    Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "QuartzPrecache").apply { isDaemon = true } }
-+  /** Waits this long so the current song's own start gets the bandwidth first. */
-+  private const val PRECACHE_DELAY_S = 6L
++  /** Lets a burst of song changes settle, so only the last one is fetched. */
++  private const val PRECACHE_DELAY_S = 1L
 +  private var precaching: CacheWriter? = null
 +  private var precachingKey: String? = null
 +
@@ -228,17 +229,17 @@ index 0000000..6b5ba72
 +    }, PRECACHE_DELAY_S, TimeUnit.SECONDS)
 +  }
 +
-+  fun loadControl(maxBufferMs: Int): LoadControl =
++  fun loadControl(): LoadControl =
 +    DefaultLoadControl.Builder()
 +      .setBufferDurationsMs(
-+        30_000,
-+        maxOf(maxBufferMs, 180_000),
++        20_000,
++        60_000,
 +        500,
 +        1_500
 +      )
-+      .setTargetBufferBytes(48 * 1024 * 1024)
++      .setTargetBufferBytes(8 * 1024 * 1024)
 +      .setPrioritizeTimeOverSizeThresholds(true)
-+      .setBackBuffer(15_000, true)
++      .setBackBuffer(5_000, true)
 +      .build()
 +}
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/QuartzFx.kt

@@ -375,6 +375,50 @@ export function cleanArtistName(raw: string): string {
     .trim();
 }
 
+/** The token for the next page of a long list, wherever this response keeps it. */
+function nextToken(node: unknown, depth = 0): string | undefined {
+  if (!node || typeof node !== 'object' || depth > 40) return undefined;
+  const obj = node as Json;
+  if (typeof obj.continuationCommand?.token === 'string') return obj.continuationCommand.token as string;
+  if (typeof obj.nextContinuationData?.continuation === 'string')
+    return obj.nextContinuationData.continuation as string;
+  for (const v of Object.values(obj)) {
+    const hit = nextToken(v, depth + 1);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Every song of a YouTube / YouTube Music playlist or album list (list=…), following its pages. */
+export async function playlistSongs(
+  listId: string,
+  signal?: AbortSignal,
+  /** Stops reading further pages once this many songs are in. */
+  max = Infinity,
+): Promise<{ title?: string; cover?: string; songs: YtSong[] }> {
+  let json = await post('browse', { browseId: listId.startsWith('VL') ? listId : `VL${listId}` }, signal);
+  const first = parse(json);
+  const seen = new Set<string>();
+  const songs: YtSong[] = [];
+  const take = (p: YtPage) => {
+    for (const x of p.sections.flatMap((sec) => sec.items))
+      if (x.kind === 'song' && !seen.has(x.videoId)) {
+        seen.add(x.videoId);
+        songs.push(x);
+      }
+  };
+  take(first);
+  for (let i = 0; i < 30 && songs.length < max; i++) {
+    const token = nextToken(json);
+    if (!token) break;
+    json = await post('browse', { continuation: token }, signal);
+    const before = songs.length;
+    take(parse(json));
+    if (songs.length === before) break;
+  }
+  return { title: first.header?.title, cover: first.header?.thumbnail, songs };
+}
+
 /** Turns a YouTube song into a Quartz track (streamed, id "yt:<videoId>"). */
 export function toTrack(s: {
   video?: boolean;

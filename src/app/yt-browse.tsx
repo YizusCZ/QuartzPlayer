@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
-import { downloadYt, useYtDownloads, ytInLibrary, type YtDownloadItem } from '@/catalog/ytDownloads';
+import {
+  confirmDeleteDownloads,
+  downloadYt,
+  useYtDownloads,
+  ytInLibrary,
+  type YtDownloadItem,
+} from '@/catalog/ytDownloads';
+import { DownloadsButton } from '@/components/DownloadsSheet';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
 import { Artwork } from '@/components/ui/Artwork';
 import { Icon } from '@/components/ui/Icon';
@@ -39,7 +46,14 @@ function DownloadAllButton({ songs, albumTitle }: { songs: YtSong[]; albumTitle?
 
   const handlePress = () => {
     if (allDone) {
-      showToast('Todas las canciones ya están en tu biblioteca local');
+      const saved = songs.filter((s) => !!ytInLibrary(s.videoId)).map((s) => s.videoId);
+      if (!saved.length) return;
+      tap('select');
+      confirmDeleteDownloads(saved, {
+        title:
+          saved.length === 1 ? (songs.find((s) => s.videoId === saved[0])?.title ?? '') : (albumTitle ?? 'esta lista'),
+        artwork: songs[0]?.thumbnail,
+      });
       return;
     }
     if (isBusy) return;
@@ -67,7 +81,11 @@ function DownloadAllButton({ songs, albumTitle }: { songs: YtSong[]; albumTitle?
       style={[styles.dlBtn, allDone && styles.dlBtnDone, isBusy && styles.dlBtnBusy]}
       onPress={isBusy ? undefined : handlePress}
       accessibilityRole="button"
-      accessibilityLabel="Guardar todas las canciones en la biblioteca local"
+      accessibilityLabel={
+        allDone
+          ? 'Eliminar estas canciones de la biblioteca local'
+          : 'Guardar todas las canciones en la biblioteca local'
+      }
     >
       {isBusy ? (
         <ActivityIndicator size="small" color={colors.accent} />
@@ -76,7 +94,7 @@ function DownloadAllButton({ songs, albumTitle }: { songs: YtSong[]; albumTitle?
       )}
       <Txt variant="bodyStrong" style={[styles.dlBtnText, allDone && { color: colors.accent }]}>
         {allDone
-          ? `Guardadas en la biblioteca (${status.total})`
+          ? `En tu biblioteca (${status.total}) · eliminar`
           : isBusy
             ? `Guardando en la biblioteca (${status.busy} pendientes)…`
             : status.done > 0
@@ -122,7 +140,7 @@ export default function YtBrowse() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title={pageTitle} />
+      <ScreenHeader title={pageTitle} right={<DownloadsButton />} />
       {!data ? (
         <View style={styles.center}>
           {page?.error ? (

@@ -9,6 +9,9 @@
  * Android freezes JS timers in the background, which held every update back
  * until you came back to Quartz: while music plays (and until a pause is
  * published) the shared keep-alive task keeps them running.
+ *
+ * During a room game the status shows the game and its round instead of the
+ * song (guess the song would give the answer away).
  */
 import { Platform } from 'react-native';
 import { create } from 'zustand';
@@ -16,7 +19,9 @@ import { AudioRouteModule } from '../../modules/audio-route';
 import { DiscordPresenceModule, type DiscordPresence } from '../../modules/discord-presence';
 import { NIGHTCORE_RATE, playerTime, SLOWED_RATE } from '@/audio/engine';
 import { FX, FX_EMOJI } from '@/audio/fx';
-import { useJam } from '@/jam/store';
+import { GAME_NAMES } from '@/jam/games';
+import { useGame, useJam } from '@/jam/store';
+import type { GameState } from '@/jam/types';
 import type { Track } from '@/library/types';
 import { trackById, useLibrary } from '@/store/library';
 import { effectiveRate, usePlayer } from '@/store/player';
@@ -117,7 +122,15 @@ function lookupCover(t: Track): Promise<string | null> {
 
 /* ───────── presence ───────── */
 
-type Snapshot = { id: string; playing: boolean; rate: number; fx: string; startMs: number; room: string };
+type Snapshot = {
+  id: string;
+  playing: boolean;
+  rate: number;
+  fx: string;
+  startMs: number;
+  room: string;
+  game: string;
+};
 
 /** The open room you're in, if you share it on Discord (its code and how many are in it). */
 function openRoom(): { code: string; people: number } | null {
@@ -129,6 +142,51 @@ const roomKey = () => {
   const r = openRoom();
   return r ? `${r.code}|${r.people}` : '';
 };
+
+/** The room game you are playing, if any. */
+function activeGame(): GameState | null {
+  return useJam.getState().status === 'joined' ? useGame.getState().game : null;
+}
+
+/** Changes when the status should: a new game, round or stage. */
+function gameKey() {
+  const g = activeGame();
+  if (!g) return '';
+  const stage = g.phase === 'voting' || g.phase === 'results' || g.phase === 'loading' ? g.phase : 'play';
+  return `${g.id}|${g.round}|${stage}`;
+}
+
+/** When the game on screen started (this phone's clock), for Discord's elapsed time. */
+let gameSince = { id: '', at: 0 };
+
+function gamePresence(g: GameState): DiscordPresence {
+  if (gameSince.id !== g.id) gameSince = { id: g.id, at: Date.now() };
+  const room = openRoom();
+  const n = g.players.length;
+  const stage =
+    g.phase === 'loading'
+      ? 'Preparando las canciones'
+      : g.phase === 'voting'
+        ? 'Votando el mejor top'
+        : g.phase === 'results'
+          ? 'Viendo los resultados'
+          : g.tiebreak
+            ? `Desempate · ronda ${g.round}`
+            : `Ronda ${g.round} de ${g.rounds}`;
+  // Tops shows the song of the round; guess the song never shows one.
+  const cover = g.kind === 'tops' && g.song?.artwork?.startsWith('https://') ? g.song.artwork : FALLBACK_IMAGE;
+  return {
+    name: ACTIVITY_NAME,
+    details: `Jugando ${GAME_NAMES[g.kind]} · ${g.category}`,
+    state: `${stage} · ${n} ${n === 1 ? 'jugador' : 'jugadores'}`,
+    largeImage: cover,
+    largeText: 'Juegos en las salas de Quartz',
+    startMs: gameSince.at,
+    ...(room
+      ? { buttonLabel: 'Unirse a la sala', buttonUrl: `${JAM_LINK}?code=${encodeURIComponent(room.code)}` }
+      : null),
+  };
+}
 
 /**
  * Badge over the cover for the sound effects in use: the pitch mode's icon
@@ -164,6 +222,8 @@ function songStartMs(position: number, rate: number) {
 }
 
 function changed(): boolean {
+  const game = gameKey();
+  if (game || last?.game) return game !== (last?.game ?? '');
   const s = usePlayer.getState();
   const t = currentTrack();
   const rate = effectiveRate(s);
@@ -190,8 +250,16 @@ async function push() {
   const t = currentTrack();
   const rate = effectiveRate(s);
 
+  const game = activeGame();
+  if (game) {
+    hold(true);
+    last = { id: '', playing: true, rate, fx: '', startMs: 0, room: roomKey(), game: gameKey() };
+    DiscordPresenceModule.update(gamePresence(game));
+    return;
+  }
+
   if (!t || !s.playing) {
-    last = { id: t?.id ?? '', playing: false, rate, fx: fxKey(s), startMs: 0, room: roomKey() };
+    last = { id: t?.id ?? '', playing: false, rate, fx: fxKey(s), startMs: 0, room: roomKey(), game: '' };
     DiscordPresenceModule.clear();
     hold(false);
     return;
@@ -199,7 +267,7 @@ async function push() {
 
   hold(true);
   const startMs = songStartMs(playerTime(), rate);
-  last = { id: t.id, playing: true, rate, fx: fxKey(s), startMs, room: roomKey() };
+  last = { id: t.id, playing: true, rate, fx: fxKey(s), startMs, room: roomKey(), game: '' };
   const duration = t.duration || s.duration;
   const room = openRoom();
   const presence = (image: string): DiscordPresence => ({
@@ -245,6 +313,7 @@ function schedule() {
 let running = false;
 let unsubPlayer: (() => void) | undefined;
 let unsubRoom: (() => void) | undefined;
+let unsubGame: (() => void) | undefined;
 let resultSub: { remove(): void } | null = null;
 
 function enable() {
@@ -262,6 +331,7 @@ function enable() {
   unsubRoom = useJam.subscribe((j, p) => {
     if (j.status !== p.status || j.code !== p.code || j.members !== p.members) schedule();
   });
+  unsubGame = useGame.subscribe(schedule);
   schedule();
 }
 
@@ -273,6 +343,7 @@ function disable() {
   generation++;
   unsubPlayer?.();
   unsubRoom?.();
+  unsubGame?.();
   resultSub?.remove();
   resultSub = null;
   DiscordPresenceModule.stop();

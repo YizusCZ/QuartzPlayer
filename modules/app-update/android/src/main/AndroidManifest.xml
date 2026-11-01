@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Lets Quartz open Android's installer for its own updates (the user still confirms). -->
+  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+  <application>
+    <provider
+      android:name="expo.modules.appupdate.UpdateFileProvider"
+      android:authorities="${applicationId}.appupdate"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/quartz_update_paths" />
+    </provider>
+  </application>
+</manifest>

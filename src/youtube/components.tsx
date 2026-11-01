@@ -1,8 +1,16 @@
 import { memo } from 'react';
-import { ActivityIndicator, FlatList, Pressable, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import {
+  ActivityIndicator,
+  FlatList,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 import { router } from 'expo-router';
 import { Player } from '@/audio/engine';
-import { useYtDownloads, ytInLibrary } from '@/catalog/ytDownloads';
+import { cancelYtDownload, confirmDeleteDownloads, useYtDownloads, useYtInLibrary } from '@/catalog/ytDownloads';
 import { Artwork } from '@/components/ui/Artwork';
 import { Icon } from '@/components/ui/Icon';
 import { Txt } from '@/components/ui/Txt';
@@ -74,10 +82,20 @@ export const SongRow = memo(function SongRow({
 }) {
   const playing = usePlayer((s) => currentTrackId(s) === `yt:${song.videoId}`);
   const dlState = useYtDownloads((s) => s.items[song.videoId]);
-  useYtDownloads((s) => s.downloaded); // trigger re-render on download changes
-  const inLib = !!ytInLibrary(song.videoId);
+  const inLib = useYtInLibrary(song.videoId);
   const isDone = inLib || dlState?.status === 'done';
-  const isBusy = !inLib && (dlState?.status === 'downloading' || dlState?.status === 'resolving' || dlState?.status === 'queued');
+  const isBusy =
+    !inLib && (dlState?.status === 'downloading' || dlState?.status === 'resolving' || dlState?.status === 'queued');
+  const pct = dlState?.status === 'downloading' && dlState.progress != null ? Math.round(dlState.progress * 100) : null;
+
+  const onStatusPress = () => {
+    tap('select');
+    if (isBusy) {
+      cancelYtDownload(song.videoId);
+      return;
+    }
+    if (isDone) confirmDeleteDownloads([song.videoId], { title: song.title, artwork: song.thumbnail });
+  };
 
   return (
     <Pressable
@@ -103,10 +121,26 @@ export const SongRow = memo(function SongRow({
         </Txt>
       </View>
       <View style={styles.rightCluster}>
-        {isBusy ? (
-          <ActivityIndicator size={13} color={colors.accent} />
-        ) : isDone ? (
-          <Icon name="check-circle" size={15} color={colors.accent} />
+        {isBusy || isDone ? (
+          <Pressable
+            onPress={onStatusPress}
+            hitSlop={8}
+            style={styles.status}
+            accessibilityRole="button"
+            accessibilityLabel={isBusy ? 'Cancelar descarga' : 'Eliminar de la biblioteca local'}
+          >
+            {isBusy ? (
+              pct != null ? (
+                <Txt variant="mono" style={{ fontSize: 11, color: colors.accent }}>
+                  {pct}%
+                </Txt>
+              ) : (
+                <ActivityIndicator size={13} color={colors.accent} />
+              )
+            ) : (
+              <Icon name="check-circle" size={16} color={colors.accent} />
+            )}
+          </Pressable>
         ) : null}
         {song.duration ? <Txt variant="mono">{formatTime(song.duration)}</Txt> : null}
       </View>
@@ -196,6 +230,31 @@ const Card = memo(function Card({ item, wide }: { item: YtCollection | YtVideo; 
   );
 });
 
+/** A playlist, album or artist as a row: how filtered search results read best. */
+const CollectionRow = memo(function CollectionRow({ item }: { item: YtCollection | YtVideo }) {
+  const round = item.kind === 'collection' && item.page === 'artist';
+  return (
+    <Pressable
+      onPress={() => (item.kind === 'video' ? playYt([item]) : openCollection(item))}
+      onLongPress={() => item.kind === 'video' && openMenu(item)}
+      style={({ pressed }) => [styles.row, styles.tallRow, pressed && { backgroundColor: colors.surface2 }]}
+      accessibilityRole="button"
+      accessibilityLabel={`${item.title}, ${item.subtitle}`}
+    >
+      <Artwork uri={item.thumbnail} seed={item.title} size={56} radius={round ? 28 : 6} />
+      <View style={{ flex: 1, gap: 2 }}>
+        <Txt variant="bodyStrong" numberOfLines={1}>
+          {item.title}
+        </Txt>
+        <Txt variant="caption" numberOfLines={1}>
+          {item.subtitle}
+        </Txt>
+      </View>
+      <Icon name={item.kind === 'video' ? 'play-circle-outline' : 'chevron-right'} size={22} color={colors.textMute} />
+    </Pressable>
+  );
+});
+
 function NavGrid({ items }: { items: YtNav[] }) {
   // Three rows, scrolling sideways, like YouTube Music's mood grid.
   const columns: YtNav[][] = [];
@@ -267,6 +326,12 @@ export function SectionView({ section, list }: { section: YtSection; list?: bool
         )
       ) : navs.length > cards.length ? (
         <NavGrid items={navs} />
+      ) : list ? (
+        <View>
+          {cards.map((c, i) => (
+            <CollectionRow key={`${c.kind === 'video' ? c.videoId : c.browseId}${i}`} item={c} />
+          ))}
+        </View>
       ) : (
         <FlatList
           horizontal
@@ -285,8 +350,10 @@ export const isSong = (i: YtItem): i is YtSong => i.kind === 'song';
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, height: 64 },
+  tallRow: { height: 74 },
   index: { width: 22, textAlign: 'right', color: colors.textMute },
   rightCluster: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  status: { minWidth: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   watch: { padding: 6, borderRadius: 999, backgroundColor: colors.accentSoft },
   more: { padding: 4, marginLeft: 2 },
   head: { paddingHorizontal: 16, gap: 2 },

@@ -10,7 +10,7 @@ import { colors, useAccent } from '@/theme';
 import { Artwork } from './ui/Artwork';
 import { FormatBadge } from './ui/FormatBadge';
 import { IconButton } from './ui/IconButton';
-import { useJam } from '@/jam/store';
+import { songHidden, useGame, useJam } from '@/jam/store';
 import { useTourRef } from './tour/Tour';
 import { Icon } from './ui/Icon';
 import { Txt } from './ui/Txt';
@@ -30,7 +30,10 @@ export function MiniPlayer() {
   const track = useLibrary((s) => trackById(s, id));
   const tourRef = useTourRef('mini');
   const inJam = useJam((s) => s.status === 'joined');
+  // Guess the song in a room: the answer stays hidden until it is revealed.
+  const hidden = useGame((s) => songHidden(s.game));
   if (!track) return null;
+  const title = hidden ? 'Canción misteriosa' : track.title;
 
   return (
     // No entering animation: every screen mounts its own mini player, and a
@@ -40,19 +43,19 @@ export function MiniPlayer() {
         style={styles.bar}
         onPress={() => router.push('/player')}
         accessibilityRole="button"
-        accessibilityLabel={`Abrir reproductor: ${track.title}`}
+        accessibilityLabel={`Abrir reproductor: ${title}`}
       >
         <Animated.View style={[styles.progress, { backgroundColor: colors.accent }, progress]} />
-        <Artwork uri={track.artwork} seed={track.album} size={44} radius={6} />
+        <Artwork uri={hidden ? undefined : track.artwork} seed={hidden ? '?' : track.album} size={44} radius={6} />
         <View style={{ flex: 1, gap: 2 }}>
           <Txt variant="bodyStrong" numberOfLines={1}>
-            {track.title}
+            {title}
           </Txt>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             {inJam ? <Icon name="account-group" size={15} color={colors.accent} /> : null}
             <FormatBadge format={track.format} compact />
             <Txt variant="caption" numberOfLines={1} style={{ flexShrink: 1 }}>
-              {track.artist}
+              {hidden ? 'Adivina la canción' : track.artist}
             </Txt>
           </View>
         </View>

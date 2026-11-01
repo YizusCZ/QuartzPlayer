@@ -162,6 +162,7 @@ let metaDuration = 0;
 function lockScreenMeta(t: Track, duration = t.duration): AudioMetadata {
   const isFavorite = !!useLibrary.getState().favorites[t.id];
   metaDuration = duration;
+  if (mask) return { ...mask, albumTitle: 'Quartz', isFavorite: false } as AudioMetadata;
   return {
     title: t.title,
     artist: t.artist,
@@ -170,6 +171,20 @@ function lockScreenMeta(t: Track, duration = t.duration): AudioMetadata {
     isFavorite,
     durationMs: duration > 0 ? Math.round(duration * 1000) : undefined,
   } as AudioMetadata;
+}
+
+/** What the notification shows instead of the song (a room's guess-the-song game), or null. */
+let mask: { title: string; artist: string } | null = null;
+
+export function setLockScreenMask(m: { title: string; artist: string } | null) {
+  mask = m;
+  const t = trackOf(loadedId ?? undefined);
+  if (!player || !lockScreenOn || !t) return;
+  try {
+    player.updateLockScreenMetadata(lockScreenMeta(t));
+  } catch {
+    // best-effort
+  }
 }
 
 // Keep the notification's heart in step when favourites change anywhere.
@@ -227,6 +242,18 @@ function noteStream(id: string, info: { codec?: string; bitrate: number; itag?: 
 // Our expo-audio patch adds `precacheStream` (QuartzCache.kt); absent, nothing is warmed.
 const nativeAudio = requireOptionalNativeModule<{ precacheStream?(url: string): void }>('ExpoAudio');
 
+/** The next song is got ready this long before the current one ends: skipped songs cost nothing. */
+const WARM_BEFORE_END_S = 40;
+/** Song id whose follower was already got ready. */
+let warmedAfter: string | null = null;
+/** Room games: clips start mid-song, so only the next stream's URL is worth having early. */
+let clipMode = false;
+
+export function setClipMode(on: boolean) {
+  clipMode = on;
+  warmedAfter = null;
+}
+
 /**
  * Gets the next song ready so it starts without a wait: its stream URL, and
  * its first seconds in the disk cache.
@@ -234,15 +261,25 @@ const nativeAudio = requireOptionalNativeModule<{ precacheStream?(url: string): 
 export function prefetchStream(t: Track | undefined) {
   if (!t || t.source !== 'youtube') return;
   const id = t.uri.slice(3);
+  const warm = (url: string) => {
+    if (!clipMode) nativeAudio?.precacheStream?.(url);
+  };
   const hit = streams.get(id);
-  if (hit && Date.now() - hit.at < STREAM_TTL) return nativeAudio?.precacheStream?.(hit.url);
+  if (hit && Date.now() - hit.at < STREAM_TTL) return warm(hit.url);
   YouTubeModule.resolve(id)
     .then((info) => {
       streams.set(id, { url: info.url, at: Date.now() });
-      nativeAudio?.precacheStream?.(info.url);
+      warm(info.url);
       noteStream(t.id, info);
     })
     .catch(() => {});
+}
+
+function warmNext(id: string, left: number) {
+  if (warmedAfter === id || !(clipMode || left < WARM_BEFORE_END_S)) return;
+  warmedAfter = id;
+  const s = state();
+  prefetchStream(trackOf(s.queue[s.index + 1]));
 }
 
 function load(id: string, autoplay: boolean, startAt: StartAt = 0): boolean {
@@ -315,11 +352,9 @@ function start(t: Track, uri: string, autoplay: boolean, startAt: StartAt) {
   const rate = effectiveRate(state()) * syncRate;
   if (autoplay) {
     player.play();
-    useLibrary.getState().recordPlay(id);
+    // A hidden song (guess the song) would show up in "recently played".
+    if (!mask) useLibrary.getState().recordPlay(id);
   }
-  // Warm up the next streamed song while this one plays.
-  const s0 = state();
-  prefetchStream(trackOf(s0.queue[s0.index + 1]));
   try {
     // Activating rebuilds the whole native media session, so it happens once;
     // later tracks only swap the metadata.
@@ -387,6 +422,7 @@ function onStatus(st: AudioStatus) {
   }
 
   const id = s.queue[s.index];
+  if (id && st.playing && st.duration > 0 && id === loadedId) warmNext(id, st.duration - st.currentTime);
   const t = trackOf(id);
   if (t && !t.duration && st.duration > 0) useLibrary.getState().patchTrack(t.id, { duration: st.duration });
   // The player now knows the real length: give it to the notification's seek bar.

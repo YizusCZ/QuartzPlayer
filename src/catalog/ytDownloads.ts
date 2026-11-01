@@ -13,7 +13,7 @@
  *  - 'high'   → Opus ~160 kbps (itag 251)
  *  - 'normal' → AAC 128 kbps  (itag 140) — smallest file size
  */
-import { Directory, DownloadTask, File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { hash } from '@/library/bytes';
@@ -28,14 +28,18 @@ import { cleanArtistName, cleanSongTitle, fetchSongDetails, hiRes } from '@/yout
 
 /* ───────── state ───────── */
 
-const PARALLEL = 2;
+const PARALLEL = 3;
 
-export type YtDownloadState =
-  | { status: 'queued' }
-  | { status: 'resolving' }
-  | { status: 'downloading'; progress: number }
-  | { status: 'done'; trackId: string }
-  | { status: 'error'; message: string };
+export type YtDownloadState = {
+  status: 'queued' | 'resolving' | 'downloading' | 'done' | 'error';
+  progress?: number;
+  trackId?: string;
+  message?: string;
+  title: string;
+  artist: string;
+  thumbnail?: string;
+  startedAt?: number;
+};
 
 type YtDownloadStore = {
   /** In-memory state of active and recent download attempts. */
@@ -43,7 +47,13 @@ type YtDownloadStore = {
   /** Persisted map of downloaded videoId -> trackId. */
   downloaded: Record<string, string>;
   setItem: (key: string, state: YtDownloadState | null) => void;
-  markDownloaded: (videoId: string, trackId: string) => void;
+  markDownloaded: (
+    videoId: string,
+    trackId: string,
+    meta: { title: string; artist: string; thumbnail?: string },
+  ) => void;
+  removeDownloaded: (videoId: string) => void;
+  clearCompleted: () => void;
 };
 
 export const useYtDownloads = create<YtDownloadStore>()(
@@ -58,11 +68,37 @@ export const useYtDownloads = create<YtDownloadStore>()(
           else delete items[key];
           return { items };
         }),
-      markDownloaded: (videoId, trackId) =>
+      markDownloaded: (videoId, trackId, meta) =>
         set((s) => ({
           downloaded: { ...s.downloaded, [videoId]: trackId },
-          items: { ...s.items, [videoId]: { status: 'done', trackId } },
+          items: {
+            ...s.items,
+            [videoId]: {
+              status: 'done',
+              trackId,
+              title: meta.title,
+              artist: meta.artist,
+              thumbnail: meta.thumbnail,
+              progress: 1,
+            },
+          },
         })),
+      removeDownloaded: (videoId) =>
+        set((s) => {
+          const downloaded = { ...s.downloaded };
+          delete downloaded[videoId];
+          const items = { ...s.items };
+          delete items[videoId];
+          return { downloaded, items };
+        }),
+      clearCompleted: () =>
+        set((s) => {
+          const items: Record<string, YtDownloadState> = {};
+          for (const [k, v] of Object.entries(s.items)) {
+            if (v.status !== 'done' && v.status !== 'error') items[k] = v;
+          }
+          return { items };
+        }),
     }),
     {
       name: 'quartz.yt-downloads',
@@ -82,15 +118,18 @@ function ytDir(): Directory {
   return dir;
 }
 
+// Also strips []{}#%^` and friends: expo-file-system parses a file's URI with
+// the strict java.net.URI, which throws on those ("Illegal character in path").
 const safe = (s: string) =>
   s
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/[\\/:*?"<>|[\]{}#%^`\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80) || 'Canción';
 
 function target(title: string, artist: string, videoId: string, ext: string): File {
-  const base = `${safe(artist)} - ${safe(title)} [${videoId}]`;
+  // Parentheses (not brackets) around the id: java.net.URI allows ( ) in a path.
+  const base = `${safe(artist)} - ${safe(title)} (${videoId})`;
   let file = new File(ytDir(), `${base}.${ext}`);
   for (let n = 2; file.exists; n++) file = new File(ytDir(), `${base} (${n}).${ext}`);
   return file;
@@ -113,7 +152,11 @@ async function downloadCover(videoId: string, thumbnail?: string): Promise<strin
 
 /** Pick file extension from the resolved stream. */
 function extFromStream(info: YtStream): string {
-  if (/opus/i.test(info.codec ?? '') || info.mimeType?.includes('webm') || [774, 251, 250, 249].includes(info.itag ?? 0))
+  if (
+    /opus/i.test(info.codec ?? '') ||
+    info.mimeType?.includes('webm') ||
+    [774, 251, 250, 249].includes(info.itag ?? 0)
+  )
     return 'opus';
   return 'm4a';
 }
@@ -135,49 +178,78 @@ export type YtDownloadItem = {
 };
 
 const queue: YtDownloadItem[] = [];
+const CANCELLED = 'cancelled';
+const cancelled = new Set<string>();
 let running = 0;
+let leftoversCleared = false;
+
+/** Half-saved files from a run the app did not get to finish. */
+function clearLeftovers() {
+  if (leftoversCleared) return;
+  leftoversCleared = true;
+  try {
+    for (const entry of ytDir().list()) if (entry.name.endsWith('.part')) entry.delete();
+  } catch {
+    // nothing to clean up
+  }
+}
 
 async function run(item: YtDownloadItem) {
   running++;
   const key = item.videoId;
-  setItem(key, { status: 'resolving' });
+  setItem(key, {
+    status: 'resolving',
+    title: item.title,
+    artist: item.artist,
+    thumbnail: item.thumbnail,
+    startedAt: Date.now(),
+  });
 
   try {
-    // 1. Resolve the audio stream URL with preferred quality
-    const quality = streamQuality();
-    const info = await YouTubeModule.resolve(key, quality);
+    // 1. Stream URL, metadata and cover at once: none needs the others to start.
+    const startedAt = Date.now();
+    const needsDetails = !item.album || item.album === item.title || item.album === 'YouTube Music' || !item.artist;
+    const detailsP = needsDetails ? fetchSongDetails(key) : Promise.resolve(null);
+    const coverP = detailsP.then((d) => {
+      const url = hiRes(d?.thumbnail || item.thumbnail);
+      return url ? downloadCover(key, url).then((uri) => ({ url, uri })) : undefined;
+    });
+    const info = await YouTubeModule.resolve(key, streamQuality());
+    const details = await detailsP;
+    const resolvedMs = Date.now() - startedAt;
+    if (cancelled.has(key)) throw new Error(CANCELLED);
     const ext = extFromStream(info);
 
-    // 2. Fetch rich metadata (accurate album, clean artist, cover) if missing
-    let details: { title?: string; artist?: string; album?: string; thumbnail?: string; duration?: number } | null = null;
-    if (!item.album || item.album === item.title || item.album === 'YouTube Music' || !item.artist) {
-      details = await fetchSongDetails(key);
-    }
-
     const title = cleanSongTitle(details?.title || item.title || info.title) || item.title;
-    const artist = cleanArtistName(item.artist || details?.artist || info.artist || 'Artista desconocido') || 'Artista desconocido';
+    const artist =
+      cleanArtistName(item.artist || details?.artist || info.artist || 'Artista desconocido') || 'Artista desconocido';
     const album =
       (item.album && item.album !== item.title && item.album !== 'YouTube Music' ? item.album : details?.album) ||
       `${artist} - Single`;
 
+    clearLeftovers();
     const file = target(title, artist, key, ext);
 
-    // 3. Download the audio file
-    setItem(key, { status: 'downloading', progress: 0 });
-    const task = new DownloadTask(info.url, file, {
-      onProgress: ({ bytesWritten, totalBytes }) => {
-        const total = totalBytes > 0 ? totalBytes : 0;
-        if (total > 0) setItem(key, { status: 'downloading', progress: Math.min(1, bytesWritten / total) });
-      },
+    // 2. The audio file
+    const base = { status: 'downloading' as const, title, artist, thumbnail: item.thumbnail, startedAt };
+    setItem(key, { ...base, progress: 0 });
+    let shown = 0;
+    const transfer = await YouTubeModule.download(key, info.url, file.uri, (written, total) => {
+      const progress = total > 0 ? Math.min(1, written / total) : 0;
+      // Every row and badge listening re-renders on a change: whole percents are enough.
+      if (progress - shown < 0.01 || cancelled.has(key)) return;
+      shown = progress;
+      setItem(key, { ...base, progress });
     });
-    const saved = await task.downloadAsync();
-    if (!saved) throw new Error('Guardado cancelado');
+    const saved = new File(file.uri);
+    console.log(`[yt-download] ${key}: url ${resolvedMs} ms, archivo ${transfer.size} B en ${transfer.ms} ms`);
 
-    // 4. Download the high-res cover
-    const coverUrl = hiRes(details?.thumbnail || item.thumbnail || info.thumbnail);
-    const artwork = await downloadCover(key, coverUrl);
+    // 3. The cover (usually in already; only a missing one falls back to the stream's)
+    const cover = await coverP;
+    const coverUrl = cover?.url ?? hiRes(info.thumbnail);
+    const artwork = cover?.uri ?? (await downloadCover(key, coverUrl));
 
-    // 5. Build the track
+    // 4. Build the track
     const codec = ext === 'opus' ? 'OPUS' : 'AAC';
     const kbps = info.bitrate > 0 ? Math.round(info.bitrate / 1000) : undefined;
     const track: Track = {
@@ -203,7 +275,8 @@ async function run(item: YtDownloadItem) {
     };
 
     useLibrary.getState().upsertTracks([track]);
-    useYtDownloads.getState().markDownloaded(key, track.id);
+    useLibrary.setState({ lastScan: Date.now() });
+    useYtDownloads.getState().markDownloaded(key, track.id, { title, artist, thumbnail: artwork || coverUrl });
 
     // Update active stream track in memory if it was playing
     useLibrary.getState().patchTrack(`yt:${key}`, {
@@ -213,8 +286,18 @@ async function run(item: YtDownloadItem) {
       artwork: artwork || coverUrl,
     });
   } catch (e) {
-    setItem(key, { status: 'error', message: (e as Error).message ?? 'Error de red' });
+    if (cancelled.has(key) || (e as Error)?.message?.includes(CANCELLED)) return;
+    // Surfaced to logcat so a failed save can be diagnosed over adb.
+    console.warn('[yt-download] fallo al guardar', key, (e as Error)?.message, e);
+    setItem(key, {
+      status: 'error',
+      message: (e as Error).message ?? 'Error de red',
+      title: item.title,
+      artist: item.artist,
+      thumbnail: item.thumbnail,
+    });
   } finally {
+    cancelled.delete(key);
     running--;
     pump();
   }
@@ -240,7 +323,12 @@ export function downloadYt(items: YtDownloadItem[]) {
     if (ytInLibrary(item.videoId)) continue;
     const cur = existing[item.videoId];
     if (cur && cur.status !== 'error') continue;
-    setItem(item.videoId, { status: 'queued' });
+    setItem(item.videoId, {
+      status: 'queued',
+      title: item.title,
+      artist: item.artist,
+      thumbnail: item.thumbnail,
+    });
     queue.push(item);
     added++;
   }
@@ -248,16 +336,109 @@ export function downloadYt(items: YtDownloadItem[]) {
   return added;
 }
 
+/** Saved songs by video id, read from the file names: rebuilt only when the library changes. */
+let index: { tracks: Record<string, Track>; ids: Map<string, string> } | null = null;
+function savedIds(tracks: Record<string, Track>) {
+  if (index?.tracks === tracks) return index.ids;
+  const ids = new Map<string, string>();
+  for (const t of Object.values(tracks)) {
+    // "Artist - Title (id).opus", or […] in older files.
+    for (const m of t.filename.matchAll(/[[(]([\w-]{11})[\])]/g)) ids.set(m[1], t.id);
+  }
+  index = { tracks, ids };
+  return ids;
+}
+
+const lookup = (tracks: Record<string, Track>, downloaded: Record<string, string>, videoId: string) => {
+  const trackId = downloaded[videoId];
+  return trackId && tracks[trackId] ? trackId : savedIds(tracks).get(videoId);
+};
+
 /** Check if a YouTube video has already been saved to the library. */
 export function ytInLibrary(videoId: string): string | undefined {
-  const { downloaded } = useYtDownloads.getState();
-  const trackId = downloaded[videoId];
-  const { tracks } = useLibrary.getState();
-  if (trackId && tracks[trackId]) return trackId;
+  return lookup(useLibrary.getState().tracks, useYtDownloads.getState().downloaded, videoId);
+}
 
-  // Check if any track has videoId in URI or filename
-  for (const t of Object.values(tracks)) {
-    if (t.uri.includes(videoId) || t.filename.includes(videoId)) return t.id;
+/** The same, for a component: re-renders only when this one song's answer changes. */
+export function useYtInLibrary(videoId: string): boolean {
+  const downloaded = useYtDownloads((s) => s.downloaded);
+  return useLibrary((s) => !!lookup(s.tracks, downloaded, videoId));
+}
+
+/** Cancels a queued or active download. */
+export function cancelYtDownload(videoId: string) {
+  // If in queue, remove it
+  const idx = queue.findIndex((i) => i.videoId === videoId);
+  if (idx !== -1) queue.splice(idx, 1);
+
+  // If running, stop it where it is; run() cleans up without reporting an error.
+  else if (useYtDownloads.getState().items[videoId]) {
+    cancelled.add(videoId);
+    YouTubeModule.cancelDownload(videoId);
   }
-  return undefined;
+
+  setItem(videoId, null);
+}
+
+/** Deletes a downloaded YouTube song from the device and library. */
+export function deleteDownloadedTrack(videoId: string): boolean {
+  const trackId = ytInLibrary(videoId);
+  const { tracks, removeTrack } = useLibrary.getState();
+  const track = trackId ? tracks[trackId] : undefined;
+
+  if (track) {
+    try {
+      new File(track.uri).delete();
+    } catch {
+      // already gone
+    }
+    removeTrack(track.id);
+  }
+
+  // Also clean up any file in YouTube directory matching this videoId
+  try {
+    const dir = new Directory(musicDir(), 'YouTube');
+    if (dir.exists) {
+      for (const entry of dir.list()) {
+        if (entry.name.includes(videoId)) {
+          entry.delete();
+        }
+      }
+    }
+  } catch {}
+
+  useYtDownloads.getState().removeDownloaded(videoId);
+  useLibrary.setState({ lastScan: Date.now() });
+  return true;
+}
+
+/** Deletes multiple downloaded YouTube songs from the device and library. */
+export function deleteDownloadedTracks(videoIds: string[]): number {
+  let count = 0;
+  for (const id of videoIds) {
+    if (deleteDownloadedTrack(id)) count++;
+  }
+  return count;
+}
+
+/**
+ * Asks in the app's confirmation dialog, then removes saved songs from the
+ * device and the library. `title` names the song (or the album/list for several).
+ */
+export function confirmDeleteDownloads(videoIds: string[], { title, artwork }: { title: string; artwork?: string }) {
+  const one = videoIds.length === 1;
+  useUI.getState().askConfirm({
+    icon: 'trash-can-outline',
+    artwork,
+    destructive: true,
+    confirmLabel: 'Eliminar',
+    title: one ? 'Quitar de tu biblioteca' : `Quitar ${videoIds.length} canciones`,
+    message: one
+      ? `Se borrará el archivo de “${title}” de este teléfono. Podrás seguir escuchándola en streaming.`
+      : `Se borrarán de este teléfono las canciones guardadas de “${title}”. Podrás seguir escuchándolas en streaming.`,
+    onConfirm: () => {
+      const n = deleteDownloadedTracks(videoIds);
+      useUI.getState().showToast(n === 1 ? 'Quitada de tu biblioteca' : `${n} canciones quitadas de tu biblioteca`);
+    },
+  });
 }

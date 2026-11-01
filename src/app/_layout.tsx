@@ -16,8 +16,12 @@ import { startEq } from '@/audio/eq';
 import { startFx } from '@/audio/fx';
 import { startDiscordPresence } from '@/integrations/discord';
 import { startLibraryWatch } from '@/library/scanner';
+import { startUpdateChecks } from '@/lib/appUpdate';
 import { recoverPendingPick } from '@/lib/userMedia';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { TrackActions } from '@/components/TrackActions';
+import { GlobalImportSheet } from '@/components/ImportPlaylistSheet';
+import { UpdateSheet } from '@/components/UpdateSheet';
 import { NewPlaylistSheet } from '@/components/NewPlaylistSheet';
 import { Toast } from '@/components/Toast';
 import { TourOverlay } from '@/components/tour/Tour';
@@ -46,6 +50,7 @@ export default function RootLayout() {
       startFx();
       startDiscordPresence();
       void recoverPendingPick();
+      startUpdateChecks();
     });
   }, []);
 
@@ -92,6 +97,9 @@ export default function RootLayout() {
           </Stack>
           <TrackActions />
           <NewPlaylistSheet />
+          <GlobalImportSheet />
+          <UpdateSheet />
+          <ConfirmDialog />
           <Toast />
           <TourOverlay />
         </View>

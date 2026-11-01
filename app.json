@@ -3,7 +3,7 @@
     "name": "Quartz",
     "slug": "quartz",
     "scheme": "quartz",
-    "version": "1.0.0",
+    "version": "1.0.4",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -24,8 +24,11 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "permissions": ["android.permission.POST_NOTIFICATIONS"],
-      "predictiveBackGestureEnabled": false
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS"
+      ],
+      "predictiveBackGestureEnabled": false,
+      "versionCode": 10004
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -45,7 +48,9 @@
         {
           "photosPermission": false,
           "savePhotosPermission": false,
-          "granularPermissions": ["audio"]
+          "granularPermissions": [
+            "audio"
+          ]
         }
       ],
       [
@@ -67,7 +72,9 @@
           "cameraPermission": false
         }
       ],
-      "./plugins/withGradleMemory"
+      "./plugins/withGradleMemory",
+      "expo-sharing",
+      "./plugins/withReleaseSigning"
     ],
     "experiments": {
       "typedRoutes": true

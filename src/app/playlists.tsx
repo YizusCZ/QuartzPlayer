@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Alert, FlatList, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { Player } from '@/audio/engine';
+import { ImportBanner } from '@/components/ImportPlaylistSheet';
 import { MiniPlayer, MINI_PLAYER_HEIGHT } from '@/components/MiniPlayer';
 import { PlaylistCover, playlistSkin } from '@/components/cassette/PlaylistCover';
 import { getSkin, useSkinList } from '@/components/cassette/customSkins';
@@ -59,6 +60,7 @@ export default function Playlists() {
         </View>
         <Txt variant="bodyStrong">Nueva lista</Txt>
       </Pressable>
+      <ImportBanner style={{ marginHorizontal: 16, marginTop: 4, marginBottom: 8 }} />
       <FlatList
         data={playlists}
         keyExtractor={(p) => p.id}

@@ -1,4 +1,4 @@
-import { requireOptionalNativeModule } from 'expo-modules-core';
+import { requireOptionalNativeModule, type EventSubscription } from 'expo-modules-core';
 
 export type YtStream = {
   url: string;
@@ -42,9 +42,17 @@ type Native = {
     filter: 'music_songs' | 'music_playlists' | 'music_albums' | 'music_videos',
   ): Promise<(YtSong | YtPlaylistItem)[]>;
   playlist(url: string): Promise<{ title: string; artist?: string; thumbnail?: string; items: YtSong[] }>;
+  download(id: string, url: string, uri: string): Promise<{ size: number; ms: number }>;
+  cancelDownload(id: string): void;
+  addListener(event: 'downloadProgress', fn: (e: DownloadProgress) => void): EventSubscription;
 };
 
+type DownloadProgress = { id: string; written: number; total: number };
+
 const native = requireOptionalNativeModule<Native>('QuartzYouTube');
+
+const progressFns = new Map<string, (written: number, total: number) => void>();
+let progressSub: EventSubscription | undefined;
 
 /** YouTube (NewPipeExtractor, Android). Streaming and caching/downloading. */
 export const YouTubeModule = {
@@ -60,4 +68,16 @@ export const YouTubeModule = {
   search: (q: string, filter: 'music_songs' | 'music_playlists' | 'music_albums' | 'music_videos' = 'music_songs') =>
     native ? native.search(q, filter) : Promise.resolve([]),
   playlist: (url: string) => (native ? native.playlist(url) : Promise.reject(new Error('YouTube no disponible'))),
+  /** Saves a stream to `uri` in parallel byte ranges (see YouTubeModule.kt). */
+  download: async (id: string, url: string, uri: string, onProgress: (written: number, total: number) => void) => {
+    if (!native) throw new Error('YouTube no disponible');
+    progressSub ??= native.addListener('downloadProgress', (e) => progressFns.get(e.id)?.(e.written, e.total));
+    progressFns.set(id, onProgress);
+    try {
+      return await native.download(id, url, uri);
+    } finally {
+      progressFns.delete(id);
+    }
+  },
+  cancelDownload: (id: string) => native?.cancelDownload(id),
 };

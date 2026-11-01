@@ -1,7 +1,8 @@
 /**
  * Salas: listen together. The lobby creates or joins a room; inside, the
  * current song, the shared queue (vote songs up), YouTube search to add more,
- * a chat, and reactions that float over everyone's screen.
+ * a chat, and reactions that float over everyone's screen. Games
+ * (src/components/jam/RoomGames.tsx) take the room over while they last.
  */
 import { memo, useEffect, useRef, useState } from 'react';
 import {
@@ -48,7 +49,8 @@ import {
   sendChat,
   sendReaction,
 } from '@/jam/session';
-import { gemFor, JAM_GEMS, useJam, useJamProfile } from '@/jam/store';
+import { GamesTab, GameStage } from '@/components/jam/RoomGames';
+import { gemFor, JAM_GEMS, songHidden, useGame, useJam, useJamProfile } from '@/jam/store';
 import type { Member, Reaction, RoomTrack } from '@/jam/types';
 import { formatTime } from '@/library/types';
 import { usePlayer } from '@/store/player';
@@ -284,7 +286,7 @@ function CodeBoxes({
 
 /* ───────── room ───────── */
 
-type Tab = 'chat' | 'queue';
+type Tab = 'chat' | 'queue' | 'games';
 
 function Room() {
   const insets = useSafeAreaInsets();
@@ -293,7 +295,10 @@ function Room() {
   const members = useJam((s) => s.members);
   const unread = useJam((s) => s.unread);
   const reconnecting = useJam((s) => s.reconnecting);
-  const artwork = useJam((s) => s.room?.queue[s.room.index]?.artwork);
+  const roomArtwork = useJam((s) => s.room?.queue[s.room.index]?.artwork);
+  const gameOn = useGame((s) => !!s.game);
+  // Guess the song: not even the blurred cover behind the room.
+  const artwork = useGame((s) => songHidden(s.game)) ? undefined : roomArtwork;
   const upcoming = useJam((s) => (s.room ? s.room.queue.length - s.room.index - 1 : 0));
   const [tab, setTab] = useState<Tab>('chat');
   const [sheet, setSheet] = useState<'none' | 'menu' | 'people' | 'leave'>('none');
@@ -384,53 +389,61 @@ function Room() {
             </View>
           ) : null}
 
-          <NowPlaying onAdd={() => setSearchOpen(true)} />
+          {gameOn ? null : <NowPlaying onAdd={() => setSearchOpen(true)} />}
 
           {/* tabs + add */}
-          <TourTarget id="jam.tabs" style={styles.tabsRow}>
-            <View style={styles.tabs}>
-              {(
-                [
-                  ['chat', 'Chat', 'chat-processing-outline'],
-                  ['queue', upcoming > 0 ? `Cola · ${upcoming}` : 'Cola', 'playlist-music'],
-                ] as [Tab, string, IconName][]
-              ).map(([id, label, icon]) => (
-                <Pressable
-                  key={id}
-                  onPress={() => openTab(id)}
-                  style={[styles.tab, tab === id && { backgroundColor: colors.surface3 }]}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected: tab === id }}
-                >
-                  <Icon name={icon} size={18} color={tab === id ? colors.accent : colors.textDim} />
-                  <Txt variant="bodyStrong" style={[{ fontSize: 14 }, tab !== id && { color: colors.textDim }]}>
-                    {label}
-                  </Txt>
-                  {id === 'chat' && unread > 0 && tab !== 'chat' ? (
-                    <View style={styles.badge}>
-                      <Txt style={styles.badgeText}>{unread > 9 ? '9+' : unread}</Txt>
-                    </View>
-                  ) : null}
-                </Pressable>
-              ))}
-            </View>
-            <Pressable
-              onPress={() => (tap('select'), setSearchOpen(true))}
-              style={[styles.addFab, { backgroundColor: colors.accent }]}
-              accessibilityRole="button"
-              accessibilityLabel="Añadir canciones"
-            >
-              <Icon name="plus" size={20} color={colors.onAccent} />
-              <Txt variant="bodyStrong" style={{ color: colors.onAccent, fontSize: 14 }}>
-                Añadir
-              </Txt>
-            </Pressable>
-          </TourTarget>
+          {gameOn ? null : (
+            <TourTarget id="jam.tabs" style={styles.tabsRow}>
+              <View style={styles.tabs}>
+                {(
+                  [
+                    ['chat', 'Chat', 'chat-processing-outline'],
+                    ['queue', upcoming > 0 ? `Cola · ${upcoming}` : 'Cola', 'playlist-music'],
+                    ['games', 'Juegos', 'gamepad-variant'],
+                  ] as [Tab, string, IconName][]
+                ).map(([id, label, icon]) => (
+                  <Pressable
+                    key={id}
+                    onPress={() => openTab(id)}
+                    style={[styles.tab, tab === id && { backgroundColor: colors.surface3 }]}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: tab === id }}
+                  >
+                    <Icon name={icon} size={18} color={tab === id ? colors.accent : colors.textDim} />
+                    <Txt variant="bodyStrong" style={[{ fontSize: 14 }, tab !== id && { color: colors.textDim }]}>
+                      {label}
+                    </Txt>
+                    {id === 'chat' && unread > 0 && tab !== 'chat' ? (
+                      <View style={styles.badge}>
+                        <Txt style={styles.badgeText}>{unread > 9 ? '9+' : unread}</Txt>
+                      </View>
+                    ) : null}
+                  </Pressable>
+                ))}
+              </View>
+              <Pressable
+                onPress={() => (tap('select'), setSearchOpen(true))}
+                style={[styles.addFab, { backgroundColor: colors.accent }]}
+                accessibilityRole="button"
+                accessibilityLabel="Añadir canciones"
+              >
+                <Icon name="plus" size={22} color={colors.onAccent} />
+              </Pressable>
+            </TourTarget>
+          )}
         </View>
       </GestureDetector>
 
       <View style={{ flex: 1 }}>
-        {tab === 'chat' ? <ChatPanel /> : <QueueList onAdd={() => setSearchOpen(true)} />}
+        {gameOn ? (
+          <GameStage />
+        ) : tab === 'chat' ? (
+          <ChatPanel />
+        ) : tab === 'queue' ? (
+          <QueueList onAdd={() => setSearchOpen(true)} />
+        ) : (
+          <GamesTab />
+        )}
       </View>
 
       <Reactions />
@@ -1023,7 +1036,7 @@ function ChatPanel() {
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 6 }}
         ListEmptyComponent={
-          <View style={[styles.chatEmpty, { transform: [{ scaleY: -1 }] }]}>
+          <View style={styles.chatEmpty}>
             <Icon name="chat-outline" size={30} color={colors.textMute} />
             <Txt variant="caption" style={{ textAlign: 'center' }}>
               Di hola a la sala. Los mensajes y reacciones los ven todos al instante.
@@ -1326,10 +1339,9 @@ const styles = StyleSheet.create({
     paddingBottom: 6,
   },
   addFab: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 14,
+    justifyContent: 'center',
+    width: 42,
     height: 42,
     borderRadius: 21,
   },
@@ -1593,7 +1605,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
+    gap: 5,
     paddingVertical: 10,
     borderRadius: 999,
   },

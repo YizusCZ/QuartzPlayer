@@ -1,7 +1,13 @@
 import { Alert, ScrollView, StyleSheet, View } from 'react-native';
 import { router } from 'expo-router';
 import { Player } from '@/audio/engine';
-import { downloadYt, useYtDownloads, ytInLibrary, type YtDownloadItem } from '@/catalog/ytDownloads';
+import {
+  confirmDeleteDownloads,
+  downloadYt,
+  useYtDownloads,
+  ytInLibrary,
+  type YtDownloadItem,
+} from '@/catalog/ytDownloads';
 import { deleteImported } from '@/library/scanner';
 import type { Track } from '@/library/types';
 import { pick } from '@/lib/userMedia';
@@ -128,42 +134,73 @@ export function TrackActions() {
               label="Información técnica"
               onPress={act(() => router.push({ pathname: '/info', params: { id: track.id } }))}
             />
-            {track.source === 'youtube' ? (() => {
-              const videoId = track.uri.slice(3);
-              const inLib = !!ytInLibrary(videoId);
-              const dlDone = inLib || ytDlState?.status === 'done';
-              const dlBusy = !inLib && (ytDlState?.status === 'downloading' || ytDlState?.status === 'resolving' || ytDlState?.status === 'queued');
-              const dlErr = !inLib && ytDlState?.status === 'error';
-              const progressPct = ytDlState?.status === 'downloading' ? Math.round(ytDlState.progress * 100) : null;
-              return (
-                <SheetItem
-                  icon={dlDone ? 'check-circle' : dlBusy ? 'progress-download' : dlErr ? 'refresh' : 'download'}
-                  label={dlDone ? 'Guardada en la biblioteca local' : dlBusy ? 'Guardando en la biblioteca…' : dlErr ? 'Reintentar guardado' : 'Guardar en biblioteca local'}
-                  detail={dlBusy && progressPct != null ? `${progressPct}%` : dlErr ? ytDlState?.message : undefined}
-                  onPress={
-                    dlDone
-                      ? () => {
-                          close();
-                          showToast('Esta canción ya está en tu biblioteca local');
-                        }
-                      : dlBusy
-                        ? () => {}
-                        : act(() => {
-                            const item: YtDownloadItem = {
-                              videoId,
-                              title: track.title,
-                              artist: track.artist,
-                              album: track.album,
-                              thumbnail: track.artwork,
-                              duration: track.duration,
-                            };
-                            downloadYt([item]);
-                            showToast('Guardando en tu biblioteca local…');
-                          })
-                  }
-                />
-              );
-            })() : null}
+            {track.source === 'youtube'
+              ? (() => {
+                  const videoId = track.uri.slice(3);
+                  const inLib = !!ytInLibrary(videoId);
+                  const dlDone = inLib || ytDlState?.status === 'done';
+                  const dlBusy =
+                    !inLib &&
+                    (ytDlState?.status === 'downloading' ||
+                      ytDlState?.status === 'resolving' ||
+                      ytDlState?.status === 'queued');
+                  const dlErr = !inLib && ytDlState?.status === 'error';
+                  const progressPct =
+                    ytDlState?.status === 'downloading' && ytDlState.progress != null
+                      ? Math.round(ytDlState.progress * 100)
+                      : null;
+                  return (
+                    <SheetItem
+                      icon={dlDone ? 'check-circle' : dlBusy ? 'progress-download' : dlErr ? 'refresh' : 'download'}
+                      label={
+                        dlDone
+                          ? 'En tu biblioteca local'
+                          : dlBusy
+                            ? 'Guardando en la biblioteca…'
+                            : dlErr
+                              ? 'Reintentar guardado'
+                              : 'Guardar en biblioteca local'
+                      }
+                      detail={
+                        dlDone
+                          ? 'Eliminar'
+                          : dlBusy && progressPct != null
+                            ? `${progressPct}%`
+                            : dlErr
+                              ? ytDlState?.message
+                              : undefined
+                      }
+                      selected={dlDone}
+                      onPress={
+                        dlDone
+                          ? () => {
+                              const t = track;
+                              close();
+                              // Let this sheet finish closing before the dialog opens.
+                              setTimeout(
+                                () => confirmDeleteDownloads([videoId], { title: t.title, artwork: t.artwork }),
+                                300,
+                              );
+                            }
+                          : dlBusy
+                            ? () => {}
+                            : act(() => {
+                                const item: YtDownloadItem = {
+                                  videoId,
+                                  title: track.title,
+                                  artist: track.artist,
+                                  album: track.album,
+                                  thumbnail: track.artwork,
+                                  duration: track.duration,
+                                };
+                                downloadYt([item]);
+                                showToast('Guardando en tu biblioteca local…');
+                              })
+                      }
+                    />
+                  );
+                })()
+              : null}
             {track.source === 'imported' ? (
               <SheetItem
                 icon="delete-outline"

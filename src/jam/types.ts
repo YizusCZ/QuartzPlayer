@@ -49,6 +49,8 @@ export type RoomState = {
   index: number;
   /** Members asking to skip the current song. */
   skip: string[];
+  /** A game is on (src/jam/games.ts). */
+  gameOn?: boolean;
   clock: Clock;
 };
 
@@ -79,3 +81,73 @@ export const RADIO_BY = 'Radio de la sala';
 export type ChatMessage = { id: string; from: string; name: string; color: string; text: string; at: number };
 
 export type Reaction = { id: string; emoji: string; color: string; name: string };
+
+/* ───────── games ───────── */
+
+export type GameKind = 'tops' | 'guess';
+
+/**
+ *  - loading: the host is gathering the songs;
+ *  - countdown: the first clip is loading on every phone;
+ *  - playing: a clip plays (at most 25 s);
+ *  - reveal: the 3 s between clips (the answer, or where everyone placed it);
+ *  - voting: Tops only, everyone picks the best top;
+ *  - results: the end.
+ */
+export type GamePhase = 'loading' | 'countdown' | 'playing' | 'reveal' | 'voting' | 'results';
+
+export type GameSong = {
+  id: string; // "yt:<videoId>"
+  title: string;
+  artist: string;
+  artwork?: string;
+  duration: number;
+  /** Where the clip starts (s). */
+  start: number;
+};
+
+export type GameOption = { title: string; artist: string };
+
+export type GamePlayer = { id: string; name: string; color: string };
+
+/** A game in a room, as the host runs it. Sent on every change. */
+export type GameState = {
+  v: number;
+  id: string;
+  kind: GameKind;
+  categoryId: string;
+  category: string;
+  phase: GamePhase;
+  /** Current round (1-based) and how many there are (tie-breaks add more). */
+  round: number;
+  rounds: number;
+  /** A tie-break round: only these players answer. */
+  tiebreak?: string[];
+  /** When the current phase ends, on the host's clock (ms); 0 while waiting on the song. */
+  endsAt: number;
+  /** When the current clip started, on the host's clock (ms); 0 until it does. */
+  startedAt: number;
+  players: GamePlayer[];
+  /** The song of this round. Guess the song: only once it is revealed. */
+  song: GameSong | null;
+  /** Guess the song: the three choices, and the right one once revealed. */
+  options?: GameOption[];
+  answer?: number;
+  /** Players who already answered or placed the song this round. */
+  done: string[];
+  /** Guess the song: what each player chose, once revealed. */
+  picks?: Record<string, number>;
+  scores?: Record<string, number>;
+  /** Guess the song: total time to answer right (ms), the last tie-break. */
+  times?: Record<string, number>;
+  /** Tops: each player's five places. */
+  tops?: Record<string, (GameSong | null)[]>;
+  /** Tops: voter → whose top they picked. */
+  votes?: Record<string, string>;
+  winners?: string[];
+};
+
+export type GameCommand =
+  | { type: 'place'; round: number; slot: number }
+  | { type: 'answer'; round: number; option: number; ms: number }
+  | { type: 'vote'; for: string };

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { persistStorage } from '@/store/storage';
-import type { ChatMessage, Member, Reaction, RoomState } from './types';
+import type { ChatMessage, GameState, Member, Reaction, RoomState } from './types';
 
 /** Who you are in a room: a mineral, with its own colour and cut. */
 export type JamGem = { name: string; color: string; light: string; dark: string; cut: string };
@@ -88,3 +88,10 @@ export const useJam = create<Jam>()(() => ({
 }));
 
 export const inRoom = () => useJam.getState().status === 'joined';
+
+/** The game being played in the room, if any (src/jam/games.ts). */
+export const useGame = create<{ game: GameState | null }>()(() => ({ game: null }));
+
+/** Guess the song hides the song until its answer is shown: in the player, the notification and Discord. */
+export const songHidden = (g: GameState | null) =>
+  !!g && g.kind === 'guess' && (g.phase === 'loading' || g.phase === 'countdown' || g.phase === 'playing');
