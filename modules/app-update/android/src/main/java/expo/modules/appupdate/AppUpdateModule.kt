@@ -40,6 +40,14 @@ class AppUpdateModule : Module() {
       context.startActivity(intent)
     }
 
+    /** Opens the app anew from a new process (a theme read once at startup). */
+    Function("restart") {
+      val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
+        ?: throw CodedException("NO_INTENT", "No launch intent", null)
+      context.startActivity(Intent.makeRestartActivityTask(launch.component))
+      Runtime.getRuntime().exit(0)
+    }
+
     /** `path`: a file:// URI or path inside the cache's updates/ folder. */
     Function("install") { path: String ->
       val file = File(Uri.parse(path).path ?: path)

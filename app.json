@@ -3,7 +3,7 @@
     "name": "Quartz",
     "slug": "quartz",
     "scheme": "quartz",
-    "version": "1.0.4",
+    "version": "1.0.6",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -28,7 +28,7 @@
         "android.permission.POST_NOTIFICATIONS"
       ],
       "predictiveBackGestureEnabled": false,
-      "versionCode": 10004
+      "versionCode": 10006
     },
     "web": {
       "favicon": "./assets/favicon.png"

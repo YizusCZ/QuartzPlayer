@@ -30,7 +30,7 @@ index 992239b..5a68764 100644
  
    private fun isRawResource(uri: Uri): Boolean =
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index c76a9fd..45113f9 100644
+index c76a9fd..a6c3187 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -12,7 +12,6 @@ import androidx.media3.common.PlaybackException
@@ -49,7 +49,7 @@ index c76a9fd..45113f9 100644
  private const val SEEK_JUMP_INTERVAL_MS: Long = 10_000
  
  @UnstableApi
-@@ -34,25 +34,14 @@ class AudioPlayer(
+@@ -34,25 +34,16 @@ class AudioPlayer(
    updateInterval: Double,
    bufferDurationMs: Long = 0
  ) : BaseAudioPlayer(
@@ -76,10 +76,12 @@ index c76a9fd..45113f9 100644
 -    }
 +    // Quartz patch: buffering tuned for music (QuartzCache.loadControl).
 +    .setLoadControl(QuartzCache.loadControl())
++    // Quartz patch: CPU and Wi-Fi stay awake while streaming with the screen off.
++    .setWakeMode(C.WAKE_MODE_NETWORK)
      .build(),
    appContext = appContext,
    updateInterval = updateInterval,
-@@ -97,6 +86,11 @@ class AudioPlayer(
+@@ -97,6 +88,11 @@ class AudioPlayer(
      startUpdating()
    }
  

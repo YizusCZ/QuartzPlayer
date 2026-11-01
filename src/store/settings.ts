@@ -11,7 +11,12 @@ export type YtDownloadQuality = 'best' | 'high' | 'normal';
 export const VISUALIZERS: { id: VisualizerId; name: string; detail: string; needsAnalyzer: boolean }[] = [
   { id: 'cassette', name: 'Cassette', detail: 'Carretes animados según el progreso', needsAnalyzer: false },
   { id: 'lyrics', name: 'Letras', detail: 'Karaoke sincronizado palabra por palabra', needsAnalyzer: false },
-  { id: 'video', name: 'Vídeo', detail: 'Tus vídeos, GIF o la portada animada a pantalla completa', needsAnalyzer: false },
+  {
+    id: 'video',
+    name: 'Vídeo',
+    detail: 'Tus vídeos, GIF o la portada animada a pantalla completa',
+    needsAnalyzer: false,
+  },
   { id: 'spectrum', name: 'Barras', detail: 'Espectro de barras con picos', needsAnalyzer: true },
   { id: 'led', name: 'LED Hi-Fi', detail: 'Segmentos estilo ecualizador de equipo', needsAnalyzer: true },
   { id: 'mirror', name: 'Espejo', detail: 'Barras simétricas desde el centro', needsAnalyzer: true },
@@ -91,7 +96,7 @@ type Settings = {
 export const useSettings = create<Settings>()(
   persist(
     (set) => ({
-      autoVisualizer: true,
+      autoVisualizer: false,
       cassetteSkin: 'magenta',
       cassetteSkinMode: 'auto',
       handwrittenLabel: false,
@@ -121,6 +126,15 @@ export const useSettings = create<Settings>()(
       ytDownloadQuality: 'best',
       set: (patch) => set(patch),
     }),
-    { name: 'quartz.settings', storage: persistStorage() },
+    {
+      name: 'quartz.settings',
+      storage: persistStorage(),
+      version: 1,
+      // v1: new defaults, once, for phones that already had the app.
+      migrate: (saved, version) => {
+        const s = saved as Settings;
+        return version < 1 ? { ...s, autoVisualizer: false, ambientShare: true } : s;
+      },
+    },
   ),
 );

@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+  <!-- Rooms and streaming with the screen off: CPU and Wi-Fi stay awake while they last. -->
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
   <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
 </manifest>

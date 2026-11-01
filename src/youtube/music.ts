@@ -419,6 +419,53 @@ export async function playlistSongs(
   return { title: first.header?.title, cover: first.header?.thumbnail, songs };
 }
 
+function findDeep(node: unknown, test: (n: Json) => unknown, depth = 0): unknown {
+  if (!node || typeof node !== 'object' || depth > 60) return undefined;
+  const hit = test(node as Json);
+  if (hit) return hit;
+  for (const v of Object.values(node as Json)) {
+    const found = findDeep(v, test, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * A song's words on YouTube Music. Local files have no video id: the song is
+ * found by name first, and only one by the same artist and of about the same
+ * length counts.
+ */
+export async function songLyrics(
+  videoId: string | undefined,
+  track: { title: string; artist: string; duration: number },
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  let id = videoId;
+  if (!id) {
+    const loose = (x: string) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const found = await search(`${track.artist} ${track.title}`, 'songs', signal);
+    const same = found.find(
+      (x): x is YtSong =>
+        x.kind === 'song' &&
+        loose(x.artist).includes(loose(track.artist)) &&
+        (!track.duration || !x.duration || Math.abs(x.duration - track.duration) < 8),
+    );
+    id = same?.videoId;
+  }
+  if (!id) return undefined;
+  const next = await post('next', { videoId: id, isAudioOnly: true }, signal);
+  const browseId = findDeep(next, (n) =>
+    n.browseEndpoint?.browseEndpointContextSupportedConfigs?.browseEndpointContextMusicConfig?.pageType ===
+    'MUSIC_PAGE_TYPE_TRACK_LYRICS'
+      ? n.browseEndpoint.browseId
+      : undefined,
+  ) as string | undefined;
+  if (!browseId) return undefined;
+  const page = await post('browse', { browseId }, signal);
+  const shelf = findDeep(page, (n) => n.musicDescriptionShelfRenderer) as Json | undefined;
+  return text(shelf?.description).trim() || undefined;
+}
+
 /** Turns a YouTube song into a Quartz track (streamed, id "yt:<videoId>"). */
 export function toTrack(s: {
   video?: boolean;

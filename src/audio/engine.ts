@@ -36,6 +36,13 @@ type StartAt = number | (() => number);
 let pendingSeek: StartAt | null = null;
 const startSec = (a: StartAt) => (typeof a === 'function' ? a() : a);
 let notifAsked = false;
+/** While a stream's URL resolves the native player still holds the last song: where the new one will start. */
+let resolvingAt: number | null = null;
+let lastTime = 0;
+let lastMoveAt = 0;
+/** This phone is a room's guest (`setRoomPlayback`). */
+let following = false;
+let syncPlaying = false;
 
 /** Hook for modules that must re-attach to the player after a source change (EQ). */
 let onLoaded: (() => void) | undefined;
@@ -244,25 +251,28 @@ const nativeAudio = requireOptionalNativeModule<{ precacheStream?(url: string): 
 
 /** The next song is got ready this long before the current one ends: skipped songs cost nothing. */
 const WARM_BEFORE_END_S = 40;
-/** Song id whose follower was already got ready. */
-let warmedAfter: string | null = null;
+/** Song ids whose follower already has its URL / its first seconds ready. */
+let urlWarmedAfter: string | null = null;
+let bytesWarmedAfter: string | null = null;
 /** Room games: clips start mid-song, so only the next stream's URL is worth having early. */
 let clipMode = false;
+/** In a room the next song must start on time on every phone, even in the background: its URL is resolved early. */
+let roomMode = false;
 
 export function setClipMode(on: boolean) {
   clipMode = on;
-  warmedAfter = null;
+  urlWarmedAfter = null;
 }
 
 /**
  * Gets the next song ready so it starts without a wait: its stream URL, and
  * its first seconds in the disk cache.
  */
-export function prefetchStream(t: Track | undefined) {
+export function prefetchStream(t: Track | undefined, bytes = true) {
   if (!t || t.source !== 'youtube') return;
   const id = t.uri.slice(3);
   const warm = (url: string) => {
-    if (!clipMode) nativeAudio?.precacheStream?.(url);
+    if (bytes && !clipMode) nativeAudio?.precacheStream?.(url);
   };
   const hit = streams.get(id);
   if (hit && Date.now() - hit.at < STREAM_TTL) return warm(hit.url);
@@ -276,10 +286,16 @@ export function prefetchStream(t: Track | undefined) {
 }
 
 function warmNext(id: string, left: number) {
-  if (warmedAfter === id || !(clipMode || left < WARM_BEFORE_END_S)) return;
-  warmedAfter = id;
   const s = state();
-  prefetchStream(trackOf(s.queue[s.index + 1]));
+  const next = () => trackOf(s.queue[s.index + 1]);
+  if (urlWarmedAfter !== id && (clipMode || roomMode)) {
+    urlWarmedAfter = id;
+    prefetchStream(next(), false);
+  }
+  if (bytesWarmedAfter !== id && left < WARM_BEFORE_END_S) {
+    bytesWarmedAfter = id;
+    prefetchStream(next());
+  }
 }
 
 function load(id: string, autoplay: boolean, startAt: StartAt = 0): boolean {
@@ -296,6 +312,7 @@ function load(id: string, autoplay: boolean, startAt: StartAt = 0): boolean {
   player.pause();
   loadedId = id;
   const at0 = startSec(startAt);
+  resolvingAt = at0;
   set((s) => ({
     duration: t.duration,
     position: at0,
@@ -315,6 +332,11 @@ function load(id: string, autoplay: boolean, startAt: StartAt = 0): boolean {
     .catch((e: Error) => {
       if (token !== loadToken) return;
       set({ buffering: false });
+      // A room's guest keeps trying: it must not leave the song on its own.
+      if (following) {
+        setTimeout(() => token === loadToken && load(id, autoplay, startAt), 3000);
+        return;
+      }
       if (isOffline(e)) {
         // No internet: one notice, no chain of failures through the queue.
         streamFailures = 0;
@@ -343,6 +365,8 @@ function notifyOnce(kind: string, message: string) {
 function start(t: Track, uri: string, autoplay: boolean, startAt: StartAt) {
   if (!player) return;
   streamFailures = 0;
+  resolvingAt = null;
+  lastMoveAt = Date.now();
   const id = t.id;
   player.replace({ uri });
   loadedId = id;
@@ -395,6 +419,10 @@ function onStatus(st: AudioStatus) {
     set({ sleepAt: null });
   }
 
+  if (Math.abs(st.currentTime - lastTime) > 0.01) {
+    lastTime = st.currentTime;
+    lastMoveAt = Date.now();
+  }
   const duration = st.duration > 0 ? st.duration : s.duration;
   // Persist the resume point sparingly (every ~5 s of play, and on pause).
   const resumeAt =
@@ -403,7 +431,9 @@ function onStatus(st: AudioStatus) {
     // Nobody is looking: skip the 4×/s UI churn (store + UI-thread transport)
     // and only keep what outlives the screen. The next status after
     // returning to the app repaints everything.
-    if (resumeAt !== s.resumeAt || st.playing !== s.playing) set({ playing: st.playing, resumeAt });
+    // `playing` and `buffering` stay true to the player: a room's clock is made from them.
+    if (resumeAt !== s.resumeAt || st.playing !== s.playing || st.isBuffering !== s.buffering)
+      set({ playing: st.playing, buffering: st.isBuffering, resumeAt });
   } else {
     // Only the seek bar reads the position, and only in whole seconds: skip
     // status ticks that would change nothing on screen.
@@ -440,6 +470,8 @@ function onStatus(st: AudioStatus) {
 function onTrackEnd() {
   const s = state();
   if (!player) return;
+  // A room's guest changes song when the host does, not when its own copy ends.
+  if (following) return;
   if (s.sleepEndOfTrack) {
     set({ sleepEndOfTrack: false });
     if (s.index < s.queue.length - 1) go(s.index + 1, false);
@@ -528,9 +560,25 @@ export function direct<T>(fn: () => T): T {
 
 const intercept = (command: string, ...args: unknown[]) => !!controller && controller(command, args);
 
-/** Where the player really is, straight from the native side (s). */
+/**
+ * In a room. `follow`: this phone is a guest. Both keep the next stream's URL
+ * ready; a guest also never advances on its own and retries a failed stream.
+ */
+export function setRoomPlayback(room: boolean, follow: boolean) {
+  roomMode = room;
+  following = follow;
+  urlWarmedAfter = null;
+}
+
+/** Where the player really is, straight from the native side (s). While a stream resolves, where it will start. */
 export function playerTime(): number {
+  if (resolvingAt != null) return resolvingAt;
   return player?.currentTime ?? state().position;
+}
+
+/** Milliseconds since the position last moved (a stalled or failed stream keeps growing this). */
+export function playerStalledFor(): number {
+  return Date.now() - lastMoveAt;
 }
 
 /** True once the current song is loaded and not waiting on the network. */
@@ -571,6 +619,22 @@ export const Player = {
 
   pause() {
     player?.pause();
+  },
+
+  /** Plays what is loaded, nothing else (a room following its host). */
+  resume() {
+    lastMoveAt = Date.now();
+    player?.play();
+  },
+
+  /** Loads the current song again from a fresh stream (the old one stalled or expired). */
+  reload(startAt: StartAt, playing: boolean) {
+    const id = state().queue[state().index];
+    const t = trackOf(id);
+    if (!id || !t || !player) return;
+    if (t.source === 'youtube') streams.delete(t.uri.slice(3));
+    lastMoveAt = Date.now();
+    load(id, playing, startAt);
   },
 
   next() {
@@ -713,6 +777,9 @@ export const Player = {
    * reloads when the song changed; the room's drift check does the rest.
    */
   syncTo(ids: string[], index: number, startAt: StartAt, playing: boolean) {
+    // Going from paused to playing is not a stall, however long the pause was.
+    if (playing && !syncPlaying) lastMoveAt = Date.now();
+    syncPlaying = playing;
     const s = state();
     const same = s.queue.length === ids.length && s.queue.every((x, i) => x === ids[i]);
     if (!same || s.index !== index) set({ queue: ids, baseQueue: ids, index, shuffle: false, repeat: 'off' });

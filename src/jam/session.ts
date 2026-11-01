@@ -36,7 +36,16 @@
 import { AppState } from 'react-native';
 import { RealtimeClient, type RealtimeChannel } from '@supabase/realtime-js';
 import { AudioRouteModule } from '../../modules/audio-route';
-import { direct, Player, playerSettled, playerTime, setController, setSyncRate } from '@/audio/engine';
+import {
+  direct,
+  Player,
+  playerSettled,
+  playerStalledFor,
+  playerTime,
+  setController,
+  setRoomPlayback,
+  setSyncRate,
+} from '@/audio/engine';
 import type { Track } from '@/library/types';
 import { trackById, useLibrary } from '@/store/library';
 import { usePlayer } from '@/store/player';
@@ -89,6 +98,9 @@ const STEADY_CHECK_MS = 1000;
 /** How often a guest with no room yet asks the host for it. */
 const HELLO_RETRY_MS = 1000;
 const JOIN_TIMEOUT_MS = 12_000;
+/** A stream that should be moving but has not for this long is loaded again. */
+const STALL_MS = 8000;
+const WATCHDOG_MS = 3000;
 /** Someone who vanished without saying goodbye still counts as here for this long. */
 const GRACE_MS = 25_000;
 const RADIO_COLOR = '#9B7BFF';
@@ -503,7 +515,10 @@ async function topUpRadio() {
     const tracks = songs.map((x) => toTrack(x));
     useLibrary.getState().addRemote(tracks);
     for (const t of tracks) meta.set(t.id, roomTrack(t, RADIO_BY, RADIO_COLOR));
+    // The last song ended while the radio was being asked: the next one starts right away.
+    const ended = !now.playing && now.duration > 0 && playerTime() >= now.duration - 1.5;
     direct(() => Player.enqueue(tracks.map((t) => t.id)));
+    if (ended) direct(() => Player.jumpTo(now.queue.length));
     chatSystem('La radio de la sala añadió canciones parecidas');
     scheduleState(40);
   } catch {
@@ -532,8 +547,24 @@ function onHostPlayer(s: ReturnType<typeof usePlayer.getState>, prev: ReturnType
   if (s.index >= s.queue.length - 1) void topUpRadio();
 }
 
+/** Host: a stream that stalled or expired comes back from where it was; the room waits meanwhile. */
+function hostWatchdog() {
+  void topUpRadio(); // a failed radio request gets another try
+  const s = usePlayer.getState();
+  const id = s.queue[s.index];
+  if (!id || inGame() || playerSettled(id) || playerStalledFor() < STALL_MS) return;
+  const at = playerTime();
+  direct(() => Player.reload(at, true));
+}
+
+/** Reconnects the socket if Android cut it while the app was away. */
+function socketWatchdog() {
+  if (client && channel && !leaving && !client.isConnected()) client.connect();
+}
+
 function becomeHost(from: RoomState | null) {
   useJam.setState({ isHost: true });
+  setRoomPlayback(true, false);
   void channel?.track(member(true));
   setSyncRate(1);
   meta.clear();
@@ -572,6 +603,8 @@ function becomeHost(from: RoomState | null) {
   timers.push(setInterval(sendClock, CLOCK_MS));
   timers.push(setInterval(sendState, STATE_REFRESH_MS));
   timers.push(setInterval(sweepAway, 5000));
+  timers.push(setInterval(hostWatchdog, WATCHDOG_MS));
+  timers.push(setInterval(socketWatchdog, WATCHDOG_MS));
   sendState();
   ext?.onBecomeHost();
 }
@@ -634,7 +667,8 @@ function applyClock(c: Clock, fromState = false) {
   const s = usePlayer.getState();
   const changed = s.queue[s.index] !== c.id;
   // The start position is read when the stream is ready, not now.
-  direct(() => Player.syncTo(ids, c.index, () => (clock ? hostNow(clock) + lead : 0), c.playing || c.buffering));
+  // While the host waits on the network the song loads here too, ready and paused: all start together.
+  direct(() => Player.syncTo(ids, c.index, () => (clock ? hostNow(clock) + (clock.playing ? lead : 0) : 0), c.playing));
   if (changed) {
     setSyncRate(1);
     settle(900);
@@ -652,20 +686,23 @@ function correct() {
   const s = usePlayer.getState();
   if (!c.playing) {
     setSyncRate(1);
-    if (c.buffering) return; // the host waits on the network: keep going, it will catch up
     if (s.playing) direct(() => Player.pause());
+    if (c.buffering) return; // the host waits on the network: everyone waits, where they are
     if (Math.abs(local - c.pos) > 0.1 && Date.now() >= holdUntil) {
       direct(() => Player.seek(c.pos));
       settle(1000);
     }
     return;
   }
+  const target0 = hostNow(c, at);
+  // Past the end of our copy the host is about to change song: stay put.
+  if (s.duration > 0 && target0 >= s.duration - 0.5) return;
   if (!s.playing) {
-    direct(() => Player.toggle());
+    direct(() => Player.resume());
     settle(600);
   }
   if (Date.now() < holdUntil) return;
-  const target = hostNow(c, at);
+  const target = target0;
   const raw = local - target; // > 0: we are ahead
   // First look after our own seek: learn how late seeks land on this phone.
   if (seekedAt) {
@@ -706,7 +743,17 @@ function hello() {
 
 function ping() {
   lastPingAt = Date.now();
-  send('ping', { from: me().id, t0: lastPingAt });
+  send('ping', { from: me().id, t0: lastPingAt, gap: useJam.getState().drift });
+}
+
+/** Guest: a stream that should be moving and is not comes back at the host's position. */
+function guestWatchdog() {
+  const c = clock;
+  const s = usePlayer.getState();
+  if (!c?.playing || !c.id || s.queue[s.index] !== c.id || playerStalledFor() < STALL_MS) return;
+  if (s.duration > 0 && hostNow(c) >= s.duration - 0.5) return;
+  direct(() => Player.reload(() => (clock ? hostNow(clock) + lead : 0), true));
+  settle(1200);
 }
 
 function steadyPing() {
@@ -804,6 +851,7 @@ function stepDown() {
   unsubPlayer?.();
   unsubPlayer = null;
   setController(guestController);
+  setRoomPlayback(true, true);
   startGuestTimers();
 }
 
@@ -813,6 +861,8 @@ function startGuestTimers() {
   // Keep the offset fresh (networks change, clocks drift).
   timers.push(setInterval(steadyPing, PING_FAST_MS));
   timers.push(setInterval(askForRoom, HELLO_RETRY_MS));
+  timers.push(setInterval(guestWatchdog, WATCHDOG_MS));
+  timers.push(setInterval(socketWatchdog, WATCHDOG_MS));
   timers.push(setInterval(sweepAway, 5000));
   timers.push(setInterval(checkHost, 2000));
   pingBurst();
@@ -886,8 +936,13 @@ function onBye(p: { id: string; name: string }) {
 
 /** No host for a while (it left or lost its connection for good): the longest-standing member takes over. */
 function checkHost() {
-  const { status, members } = useJam.getState();
+  const { status, members, reconnecting } = useJam.getState();
   if (isHost() || status !== 'joined') return;
+  // Our own connection is what failed: nobody else left.
+  if (reconnecting || channel?.state !== 'joined' || !client?.isConnected()) {
+    heardHostAt = Date.now();
+    return;
+  }
   // A host in its grace period may still be coming back; one still sending its clock is surely here.
   if (members.some((m) => m.host) || Date.now() - heardHostAt < 6000) return;
   const present = members.filter((m) => !m.away);
@@ -1085,6 +1140,7 @@ async function connect(code: string, host: boolean) {
         }
         // Rejoined after a dropped connection: announce ourselves again and catch up.
         useJam.setState({ reconnecting: false });
+        heardHostAt = Date.now();
         flushOutbox();
         void ch.track(member(isHost()));
         if (isHost()) sendState();
@@ -1109,6 +1165,7 @@ async function connect(code: string, host: boolean) {
   before = { queue: s.queue, index: s.index, pos: playerTime() };
   void ch.track(member(false));
   setController(guestController);
+  setRoomPlayback(true, true);
   startGuestTimers();
   hello();
   const giveUp = () => {
@@ -1153,6 +1210,7 @@ export async function leaveRoom(restore = true) {
   unsubPlayer?.();
   unsubPlayer = null;
   setController(null);
+  setRoomPlayback(false, false);
   setSyncRate(1);
   appStateSub?.remove();
   appStateSub = null;

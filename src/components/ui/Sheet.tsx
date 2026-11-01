@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, radius } from '@/theme';
+import { colors, radius, glassEdge } from '@/theme';
 import { Icon, type IconName } from './Icon';
 import { Txt } from './Txt';
 
@@ -86,7 +86,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: colors.surface,
+    backgroundColor: colors.floating,
+    ...glassEdge,
     borderTopLeftRadius: radius.xl,
     borderTopRightRadius: radius.xl,
     paddingTop: 8,

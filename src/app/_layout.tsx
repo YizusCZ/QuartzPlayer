@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactElement } from 'react';
 import { View } from 'react-native';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -21,11 +21,26 @@ import { recoverPendingPick } from '@/lib/userMedia';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { TrackActions } from '@/components/TrackActions';
 import { GlobalImportSheet } from '@/components/ImportPlaylistSheet';
+import { GlassBackdrop } from '@/components/GlassBackdrop';
 import { UpdateSheet } from '@/components/UpdateSheet';
 import { NewPlaylistSheet } from '@/components/NewPlaylistSheet';
 import { Toast } from '@/components/Toast';
 import { TourOverlay } from '@/components/tour/Tour';
-import { colors, useAccent } from '@/theme';
+import { colors, glassOn, useAccent } from '@/theme';
+
+/**
+ * Liquid Glass: every screen on its own backdrop, so none shows through
+ * another. The player and the room move theirs with them while being dragged.
+ */
+function glassScreen({ route, children }: { route: { name: string }; children: ReactElement }) {
+  if (route.name === 'player' || route.name === 'jam') return children;
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.base }}>
+      <GlassBackdrop />
+      {children}
+    </View>
+  );
+}
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -61,11 +76,12 @@ export default function RootLayout() {
   if (!loaded && !error) return null;
 
   return (
-    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.bg }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.base }}>
       <SafeAreaProvider>
         <StatusBar style="light" />
         <View style={{ flex: 1 }}>
           <Stack
+            screenLayout={glassOn ? glassScreen : undefined}
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: colors.bg },

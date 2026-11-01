@@ -4,6 +4,7 @@
  * `colors` is mutated in place by `applyAccent`; components that paint the
  * accent subscribe with `useAccent()` so they re-render when it changes.
  */
+import { File, Paths } from 'expo-file-system';
 import { useSettings } from '@/store/settings';
 
 export const colors = {
@@ -23,7 +24,54 @@ export const colors = {
   hiresDeep: '#8A6A22',
   danger: '#E5484D',
   ok: '#46A758',
+  /** Always solid, for whatever must hide what is behind it. */
+  base: '#0B0B0C',
+  /** Things floating over content: sheets and the mini player. */
+  floating: '#151517',
+  floatingBar: '#1D1D20',
 };
+
+/**
+ * Liquid Glass: screens see through to src/components/GlassBackdrop.tsx.
+ * Most styles are `StyleSheet.create` calls that copy these values when their
+ * file loads, so the choice is read here, synchronously, before any of them
+ * (from a small file, not the async settings store), and changing it restarts
+ * the app.
+ */
+const glassFile = () => new File(Paths.document, 'quartz-liquid-glass');
+
+function readGlass() {
+  try {
+    return glassFile().exists;
+  } catch {
+    return false;
+  }
+}
+
+export const glassOn = readGlass();
+
+export function saveGlass(on: boolean) {
+  const f = glassFile();
+  if (on && !f.exists) f.create();
+  else if (!on && f.exists) f.delete();
+}
+
+if (glassOn) {
+  Object.assign(colors, {
+    bg: 'transparent',
+    surface: 'rgba(255,255,255,0.08)',
+    surface2: 'rgba(255,255,255,0.12)',
+    surface3: 'rgba(255,255,255,0.18)',
+    line: 'rgba(255,255,255,0.18)',
+    floating: 'rgba(26,26,34,0.97)',
+    floatingBar: 'rgba(30,30,40,0.96)',
+    textDim: 'rgba(255,255,255,0.74)',
+    textMute: 'rgba(255,255,255,0.5)',
+  });
+}
+
+/** The lit edge of a pane of glass; nothing with the theme off. */
+export const glassEdge = glassOn ? { borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' } : {};
 
 export const ACCENTS: { name: string; hex: string }[] = [
   { name: 'Ámbar', hex: '#F08A24' },

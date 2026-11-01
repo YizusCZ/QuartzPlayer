@@ -74,6 +74,10 @@ function shuffle<T>(arr: T[]): T[] {
 /** Playlists read per search: picked at random, so each game draws from different ones. */
 const LISTS_PER_QUERY = 3;
 const SONGS_PER_LIST = 200;
+/** Remixes and live takes are not the song people know. */
+const NOT_THE_ORIGINAL = /\b(remix|live|en vivo|extended|acoustic|ac[uú]stico|karaoke|instrumental ver)\b/i;
+const ARTISTS_PER_GAME = 12;
+const SONGS_PER_ARTIST = 6;
 /** Variety even in a small category: no artist more than this in one game. */
 const MAX_PER_ARTIST = 2;
 /** After this long, a song played in a game counts as fairly new again. */
@@ -86,6 +90,46 @@ const FRESH_AFTER_MS = days(45);
  * for spares and wrong answers.
  */
 async function gather(cat: GameCategory, need: number, signal: AbortSignal): Promise<YtSong[]> {
+  const pool = await (cat.artists?.length ? artistSongs(cat, signal) : searchedSongs(cat, need, signal));
+  const { heard } = useSongHistory.getState();
+  const chosen = pick(pool, need, {
+    lastHeard: (id) => heard[id],
+    now: Date.now(),
+    maxPerArtist: MAX_PER_ARTIST,
+    freshAfterMs: FRESH_AFTER_MS,
+    randomness: 1,
+  });
+  const inGame = new Set(chosen.map((s) => s.videoId));
+  const byId = new Map(pool.map((s) => [s.videoId, s]));
+  const rest = shuffle(dedupe(pool).filter((s) => !inGame.has(s.videoId))).slice(0, 40);
+  return [...chosen, ...rest].flatMap((s) => byId.get(s.videoId) ?? []);
+}
+
+const looseName = (s: string) =>
+  s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+
+/** The popular songs of some of the category's artists, only those really theirs. */
+async function artistSongs(cat: GameCategory, signal: AbortSignal): Promise<YtSong[]> {
+  const artists = shuffle(cat.artists ?? []).slice(0, ARTISTS_PER_GAME);
+  const found = await Promise.all(
+    artists.map(async (artist) => {
+      const q = cat.suffix ? `${artist} ${cat.suffix}` : artist;
+      const songs = await searchSongs(q, signal).catch(() => [] as YtSong[]);
+      const name = looseName(artist);
+      return songs
+        .filter((s) => looseName(s.artist).includes(name) && !NOT_THE_ORIGINAL.test(s.title))
+        .slice(0, SONGS_PER_ARTIST);
+    }),
+  );
+  return found.flat().filter(isOneSong);
+}
+
+/** Your own words: public playlists that talk about them, and plain song search. */
+async function searchedSongs(cat: GameCategory, need: number, signal: AbortSignal): Promise<YtSong[]> {
   const pages = await Promise.all(
     cat.queries.map(async (q) => {
       const found: YtItem[] = await search(q, 'playlists', signal).catch(() => []);
@@ -109,18 +153,7 @@ async function gather(cat: GameCategory, need: number, signal: AbortSignal): Pro
     const more = await Promise.all(cat.queries.map((q) => searchSongs(q, signal).catch(() => [] as YtSong[])));
     pool = [...pool, ...more.flat().filter(isOneSong)];
   }
-  const { heard } = useSongHistory.getState();
-  const chosen = pick(pool, need, {
-    lastHeard: (id) => heard[id],
-    now: Date.now(),
-    maxPerArtist: MAX_PER_ARTIST,
-    freshAfterMs: FRESH_AFTER_MS,
-    randomness: 1,
-  });
-  const inGame = new Set(chosen.map((s) => s.videoId));
-  const byId = new Map(pool.map((s) => [s.videoId, s]));
-  const rest = shuffle(dedupe(pool).filter((s) => !inGame.has(s.videoId))).slice(0, 40);
-  return [...chosen, ...rest].flatMap((s) => byId.get(s.videoId) ?? []);
+  return pool;
 }
 
 /** Where a clip starts: about a third in, where the chorus usually is by then. */

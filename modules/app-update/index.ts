@@ -5,6 +5,7 @@ type AppUpdateNative = {
   canInstall(): boolean;
   openInstallPermission(): void;
   install(path: string): void;
+  restart(): void;
 };
 
 /** Android only (modules/app-update); null elsewhere or in an older build. */

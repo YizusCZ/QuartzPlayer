@@ -49,12 +49,13 @@ import {
   sendChat,
   sendReaction,
 } from '@/jam/session';
+import { GlassBackdrop } from '@/components/GlassBackdrop';
 import { GamesTab, GameStage } from '@/components/jam/RoomGames';
 import { gemFor, JAM_GEMS, songHidden, useGame, useJam, useJamProfile } from '@/jam/store';
 import type { Member, Reaction, RoomTrack } from '@/jam/types';
 import { formatTime } from '@/library/types';
 import { usePlayer } from '@/store/player';
-import { colors, fonts, radius, useAccent, withAlpha } from '@/theme';
+import { colors, fonts, glassOn, radius, useAccent, withAlpha } from '@/theme';
 import { searchSongs, toTrack, type YtSong } from '@/youtube/music';
 
 const LOBBY_ART = require('../../assets/images/jam-lobby.png');
@@ -86,7 +87,8 @@ function Lobby({ initialCode }: { initialCode?: string }) {
   const off = !jamAvailable || busy;
 
   return (
-    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+    <View style={{ flex: 1, backgroundColor: colors.base }}>
+      {glassOn ? <GlassBackdrop /> : null}
       <ScrollView
         contentContainerStyle={{ paddingTop: insets.top + 4, paddingBottom: insets.bottom + 32, gap: 16 }}
         keyboardShouldPersistTaps="handled"
@@ -336,7 +338,7 @@ function Room() {
 
   return (
     <Animated.View style={[styles.room, dropStyle, { paddingBottom: keyboard || insets.bottom }]}>
-      <RoomBackdrop uri={artwork} />
+      {glassOn ? <GlassBackdrop /> : <RoomBackdrop uri={artwork} />}
 
       <GestureDetector gesture={pull}>
         <View>
@@ -906,7 +908,7 @@ function SearchScreen({ visible, onClose }: { visible: boolean; onClose: () => v
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close} statusBarTranslucent navigationBarTranslucent>
-      <View style={{ flex: 1, backgroundColor: colors.bg, paddingTop: insets.top + 6 }}>
+      <View style={{ flex: 1, backgroundColor: colors.base, paddingTop: insets.top + 6 }}>
         <View style={styles.searchHead}>
           <IconButton icon="arrow-left" size={26} label="Volver a la sala" onPress={close} />
           <View style={[styles.field, { flex: 1 }]}>
@@ -1316,7 +1318,7 @@ const Burst = memo(function Burst({ reaction }: { reaction: Reaction }) {
 });
 
 const styles = StyleSheet.create({
-  room: { flex: 1, backgroundColor: colors.bg, overflow: 'hidden' },
+  room: { flex: 1, backgroundColor: colors.base, overflow: 'hidden' },
   banner: {
     flexDirection: 'row',
     alignItems: 'center',

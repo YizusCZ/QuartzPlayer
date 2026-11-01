@@ -67,7 +67,7 @@ if (!args.includes('--no-build')) {
       '-p',
       'MemorySwapMax=0',
       '-p',
-      'CPUQuota=600%',
+      'CPUQuota=300%',
       'env',
       'NODE_OPTIONS=--max-old-space-size=2048',
       'CMAKE_BUILD_PARALLEL_LEVEL=2',

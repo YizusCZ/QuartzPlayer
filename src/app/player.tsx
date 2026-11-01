@@ -43,6 +43,7 @@ import { clearFx, FX, FX_PRESETS, fxSupported, toggleFx } from '@/audio/fx';
 import { CassetteAOD } from '@/components/cassette/CassetteAOD';
 import { CassetteView } from '@/components/cassette/CassetteView';
 import { FormatBadge } from '@/components/ui/FormatBadge';
+import { GlassBackdrop } from '@/components/GlassBackdrop';
 import { Icon } from '@/components/ui/Icon';
 import { IconButton } from '@/components/ui/IconButton';
 import { SeekBar } from '@/components/ui/SeekBar';
@@ -74,7 +75,7 @@ import { useEq } from '@/store/eq';
 import { useUI } from '@/store/ui';
 import { useMedia } from '@/store/media';
 import { forgetUserFile, pick } from '@/lib/userMedia';
-import { colors, fonts, radius, useAccent } from '@/theme';
+import { colors, fonts, radius, useAccent, glassOn } from '@/theme';
 
 type Mode = PlayerMode;
 const HIDE_AFTER = 4000;
@@ -176,7 +177,7 @@ function HiddenSong() {
 }
 
 const hiddenStyles = StyleSheet.create({
-  wrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32, backgroundColor: colors.bg },
+  wrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, padding: 32, backgroundColor: colors.base },
   btn: { marginTop: 8, paddingHorizontal: 28, height: 50, borderRadius: 25, justifyContent: 'center' },
 });
 
@@ -895,6 +896,7 @@ function PlayerView() {
   if (immersive) {
     return (
       <Animated.View style={[styles.screen, dropStyle]}>
+        {glassOn ? <GlassBackdrop /> : null}
         {backdrop}
         <GestureDetector gesture={stageGesture}>
           <View
@@ -947,7 +949,7 @@ function PlayerView() {
           }}
         >
           <LinearGradient
-            colors={['rgba(11,11,12,0)', 'rgba(11,11,12,0.94)', colors.bg]}
+            colors={['rgba(11,11,12,0)', 'rgba(11,11,12,0.94)', colors.base]}
             locations={[0, 0.35, 1]}
             style={StyleSheet.absoluteFill}
           />
@@ -981,6 +983,7 @@ function PlayerView() {
   /* ── cover layout (Walkman-style now playing) ── */
   return (
     <Animated.View style={[styles.screen, dropStyle]}>
+      {glassOn ? <GlassBackdrop /> : null}
       {backdrop}
       {topBar}
       <View style={[{ flex: 1 }, landscape && { flexDirection: 'row' }]}>
@@ -1591,7 +1594,7 @@ function SleepSheet({ visible, onClose }: { visible: boolean; onClose: () => voi
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
+  screen: { flex: 1, backgroundColor: colors.base },
   topBar: { flexDirection: 'row', alignItems: 'center', paddingBottom: 6 },
   topSide: { width: 96, flexDirection: 'row', alignItems: 'center' },
   topCenter: { flex: 1, alignItems: 'center', minWidth: 0 },

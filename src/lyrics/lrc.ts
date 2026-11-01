@@ -7,8 +7,9 @@ export type Lyrics =
   | { kind: 'synced'; lines: LyricLine[]; source: LyricsSource }
   | { kind: 'plain'; text: string; source: LyricsSource }
   | { kind: 'instrumental'; source: LyricsSource }
-  | { kind: 'none' };
-export type LyricsSource = 'embedded' | 'file' | 'lrclib';
+  /** `failed`: the lookup could not be done (no network, service overloaded), not "this song has none". */
+  | { kind: 'none'; failed?: boolean };
+export type LyricsSource = 'embedded' | 'file' | 'lrclib' | 'youtube';
 
 const LINE_TAG = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g;
 const WORD_TAG = /<(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?>/g;

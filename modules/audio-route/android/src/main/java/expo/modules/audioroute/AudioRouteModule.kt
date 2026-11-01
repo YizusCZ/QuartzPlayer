@@ -38,6 +38,42 @@ class AudioRouteModule : Module() {
 
   private val handler = Handler(Looper.getMainLooper())
   private var keepAliveTask: Int? = null
+  private var cpuLock: android.os.PowerManager.WakeLock? = null
+  private var wifiLock: android.net.wifi.WifiManager.WifiLock? = null
+
+  /**
+   * Between songs nothing is playing, so without these Android may sleep the
+   * CPU or Wi-Fi with the screen off and the next song never loads. The time
+   * limit is a safety net against a lock left behind.
+   */
+  private fun holdAwake(context: Context, on: Boolean) {
+    try {
+      if (on) {
+        if (cpuLock == null) {
+          val power = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+          cpuLock = power.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "quartz:room").apply {
+            setReferenceCounted(false)
+            acquire(6 * 3600_000L)
+          }
+        }
+        if (wifiLock == null) {
+          val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+          @Suppress("DEPRECATION")
+          wifiLock = wifi.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "quartz:room").apply {
+            setReferenceCounted(false)
+            acquire()
+          }
+        }
+      } else {
+        cpuLock?.let { if (it.isHeld) it.release() }
+        wifiLock?.let { if (it.isHeld) it.release() }
+        cpuLock = null
+        wifiLock = null
+      }
+    } catch (_: Throwable) {
+      // best-effort: the room still works with the screen on
+    }
+  }
   private var a2dp: BluetoothA2dp? = null
 
   private val deviceCallback = object : AudioDeviceCallback() {
@@ -97,6 +133,7 @@ class AudioRouteModule : Module() {
      */
     Function("setKeepAlive") { on: Boolean ->
       val rc = appContext.reactContext as? ReactContext ?: return@Function false
+      holdAwake(rc, on)
       UiThreadUtil.runOnUiThread {
         val tasks = HeadlessJsTaskContext.getInstance(rc)
         val running = keepAliveTask

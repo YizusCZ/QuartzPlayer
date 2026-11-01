@@ -92,11 +92,13 @@ export function LyricsView({ track, width, height }: Props) {
       ) : (
         <View style={styles.center}>
           <Icon name="music-box-multiple-outline" size={48} color={colors.textMute} />
-          <Txt variant="heading">Sin letra para esta canción</Txt>
+          <Txt variant="heading">{lyrics.failed ? 'No se pudo buscar la letra' : 'Sin letra para esta canción'}</Txt>
           <Txt variant="caption" style={{ textAlign: 'center', maxWidth: 280 }}>
-            {online
-              ? 'No está incrustada en el archivo ni disponible en LRCLIB. También puedes poner un .lrc con el mismo nombre junto al archivo.'
-              : 'Activa “Buscar letras en internet” en Ajustes o añade un archivo .lrc junto a la canción.'}
+            {lyrics.failed
+              ? 'El servicio de letras no respondió o no hay conexión. Se volverá a intentar al abrir la canción otra vez.'
+              : online
+                ? 'No está incrustada en el archivo ni disponible en LRCLIB. También puedes poner un .lrc con el mismo nombre junto al archivo.'
+                : 'Activa “Buscar letras en internet” en Ajustes o añade un archivo .lrc junto a la canción.'}
           </Txt>
         </View>
       )}

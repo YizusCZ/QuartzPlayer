@@ -13,7 +13,9 @@ import { useDiscordStatus, type DiscordStatus } from '@/integrations/discord';
 import { scanLibrary } from '@/library/scanner';
 import { useLibrary } from '@/store/library';
 import { PALETTES, useSettings, type PaletteId, type YtDownloadQuality } from '@/store/settings';
-import { ACCENTS, colors, radius, useAccent } from '@/theme';
+import { AppUpdateModule } from '../../modules/app-update';
+import { useUI } from '@/store/ui';
+import { ACCENTS, colors, glassEdge, glassOn, radius, saveGlass, useAccent } from '@/theme';
 import { MODES } from '@/lib/modes';
 import { checkForUpdate, installedVersion, openUpdateSheet, useAppUpdate } from '@/lib/appUpdate';
 
@@ -25,6 +27,19 @@ const DISCORD_STATUS: Record<DiscordStatus, string> = {
   ok: 'Conectado con Discord',
   error: 'Discord rechazó la actualización',
 };
+
+function confirmGlass(on: boolean) {
+  useUI.getState().askConfirm({
+    title: on ? 'Activar Liquid Glass' : 'Quitar Liquid Glass',
+    message: 'Quartz se reiniciará para aplicar el tema. La música se detendrá un momento.',
+    confirmLabel: 'Reiniciar',
+    icon: 'shimmer',
+    onConfirm: () => {
+      saveGlass(on);
+      AppUpdateModule?.restart();
+    },
+  });
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -215,6 +230,12 @@ export default function Settings() {
             </View>
             <HuePicker value={s.accent} onChange={(hex) => s.set({ accent: hex })} />
           </View>
+          <Toggle
+            label="Liquid Glass"
+            detail="Toda la app con paneles de vidrio translúcido sobre los colores de lo que suena. Al cambiarlo, Quartz se reinicia."
+            value={glassOn}
+            onChange={confirmGlass}
+          />
           <Toggle
             label="AmbientShare"
             detail="El reproductor toma los colores de la portada y los muestra como un fondo translúcido en movimiento."
@@ -602,7 +623,7 @@ function UpdateRow() {
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.surface, borderRadius: radius.md, overflow: 'hidden' },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, overflow: 'hidden', ...glassEdge },
   row: {
     minHeight: 56,
     flexDirection: 'row',

@@ -79,14 +79,15 @@ class YouTubeModule : Module() {
    * Saving a whole album has its own threads: what you press play on never
    * waits behind it.
    */
-  private fun pool(size: Int, name: String) = Executors.newFixedThreadPool(size) { r ->
+  private fun pool(size: Int, name: String, priority: Int) = Executors.newFixedThreadPool(size) { r ->
     Thread({
-      android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+      android.os.Process.setThreadPriority(priority)
       r.run()
     }, name).apply { isDaemon = true }
   }
-  private val workers = pool(2, "quartz-youtube")
-  private val saveWorkers = pool(2, "quartz-youtube-save")
+  // With the app in the background, background priority made the next song take many seconds to resolve.
+  private val workers = pool(2, "quartz-youtube", android.os.Process.THREAD_PRIORITY_DEFAULT)
+  private val saveWorkers = pool(2, "quartz-youtube-save", android.os.Process.THREAD_PRIORITY_BACKGROUND)
   private val inflight = ConcurrentHashMap<String, CompletableFuture<StreamInfo>>()
   private val cache = object : LinkedHashMap<String, Pair<Long, StreamInfo>>(32, 0.75f, true) {
     override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Pair<Long, StreamInfo>>?) = size > 24

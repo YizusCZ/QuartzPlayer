@@ -81,7 +81,7 @@ const styles = StyleSheet.create({
     paddingLeft: 12,
     paddingRight: 4,
     borderRadius: 16,
-    backgroundColor: colors.surface2,
+    backgroundColor: colors.floatingBar,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.line,

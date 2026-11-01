@@ -3,14 +3,17 @@
  *   1. lyrics embedded in the file's tags
  *   2. a sidecar .lrc next to the audio file
  *   3. LRCLIB (lrclib.net, free and keyless) when online lookup is enabled
- * Results — including "not found" — are cached on disk so each track is
- * looked up once.
+ *   4. YouTube Music's own lyrics (words only, no timings)
+ * Results are cached on disk so each track is looked up once. "Not found" is
+ * cached too, but only when every service really answered: LRCLIB often says
+ * it is overloaded, which says nothing about the song.
  */
 import { Directory, File, FileMode, Paths } from 'expo-file-system';
 import { hash } from '@/library/bytes';
 import { parseMetadata } from '@/library/metadata';
 import type { Track } from '@/library/types';
 import { useSettings } from '@/store/settings';
+import { songLyrics } from '@/youtube/music';
 import { isLrc, parseLrc, type Lyrics, type LyricsSource } from './lrc';
 
 type Cached = { at: number; synced?: string; plain?: string; instrumental?: boolean; source?: LyricsSource };
@@ -22,7 +25,8 @@ function cacheFile(track: Track): File {
   const dir = new Directory(Paths.cache, 'lyrics');
   if (!dir.exists) dir.create({ intermediates: true, idempotent: true });
   // Streamed songs use the improved lookup: their old "not found" entries are skipped.
-  const v = track.source === 'youtube' ? 'yt2|' : '';
+  // v3: entries from before misses stopped being saved on a service's errors are ignored.
+  const v = track.source === 'youtube' ? 'v3yt|' : 'v3|';
   return new File(dir, `${hash(`${v}${track.artist}|${track.title}|${track.album}`)}.json`);
 }
 
@@ -124,8 +128,42 @@ type LrclibHit = {
   duration?: number;
 };
 
+const REQUEST_TIMEOUT_MS = 6000;
+const RETRY_DELAYS_MS = [700];
+
+const wait = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener('abort', () => (clearTimeout(t), resolve()), { once: true });
+  });
+
+/** One LRCLIB request: retried while overloaded; null when it never got an answer. */
+async function lrclib(path: string, params: URLSearchParams, signal: AbortSignal): Promise<Response | null> {
+  for (let i = 0; ; i++) {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    const stop = () => ctrl.abort();
+    signal.addEventListener('abort', stop, { once: true });
+    try {
+      const res = await fetch(`https://lrclib.net/api/${path}?${params}`, {
+        headers: { 'User-Agent': 'Quartz Player (https://github.com/)' },
+        signal: ctrl.signal,
+      });
+      if (res.status !== 429 && res.status < 500) return res;
+    } catch {
+      // no network or timed out: same as overloaded
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', stop);
+    }
+    if (signal.aborted || i >= RETRY_DELAYS_MS.length) return null;
+    await wait(RETRY_DELAYS_MS[i], signal);
+  }
+}
+
+/** Null: the service did not answer, so nothing can be said about this song. */
 async function fetchLrclib(track: Track, signal: AbortSignal): Promise<Cached | null> {
-  const headers = { 'User-Agent': 'Quartz Player (https://github.com/)' };
+  let unanswered = false;
   const streamed = track.source === 'youtube';
   const live = LIVE.test(track.title);
   const clean = cleanTitle(track.title, track.artist);
@@ -157,15 +195,18 @@ async function fetchLrclib(track: Track, signal: AbortSignal): Promise<Cached | 
   const realAlbum = !streamed && track.album && track.album !== track.title ? track.album : undefined;
   if (!live) add(track.title, track.artist, realAlbum, track.duration || undefined);
   if (!live) add(clean.title, clean.artist, undefined, track.duration || undefined);
+  // "(con Alejandro Sanz)", "- Remastered": the same song under its bare name.
+  const bare = clean.title.replace(/\s*[([].*?[)\]]/g, '').trim();
+  if (!live && bare !== clean.title) add(bare, clean.artist, undefined, track.duration || undefined);
 
   // 1. Exact lookups (artist + title [+ album] [+ duration]).
   for (const at of attempts) {
     const params = new URLSearchParams({ track_name: at.title, artist_name: at.artist });
     if (at.album) params.set('album_name', at.album);
     if (at.duration) params.set('duration', String(Math.round(at.duration)));
-    const res = await fetch(`https://lrclib.net/api/get?${params}`, { headers, signal });
-    if (res.ok) return pick((await res.json()) as LrclibHit, false);
-    if (res.status !== 404) return null; // server trouble: do not cache a miss
+    const res = await lrclib('get', params, signal);
+    if (!res) unanswered = true;
+    else if (res.ok) return pick((await res.json()) as LrclibHit, false);
   }
 
   // 2. Fuzzy search: cleaned title + artist, then a free-text query.
@@ -174,9 +215,16 @@ async function fetchLrclib(track: Track, signal: AbortSignal): Promise<Cached | 
     new URLSearchParams({ q: `${clean.artist} ${clean.title}` }),
     new URLSearchParams({ track_name: track.title, artist_name: track.artist }),
   ];
+  // "恋愛サーキュレーション - Renai Circulation" under a channel's name: any one name, the length decides.
+  const names = clean.title.split(/\s+[-–—]\s+/).filter(Boolean);
+  const byNameOnly = names.length > 1 ? names : [];
+  for (const n of byNameOnly) queries.push(new URLSearchParams({ q: n }));
   for (const q of queries) {
-    const res = await fetch(`https://lrclib.net/api/search?${q}`, { headers, signal });
-    if (!res.ok) continue;
+    // Overloaded once is overloaded for all of them: the other source answers sooner.
+    if (unanswered) break;
+    const res = await lrclib('search', q, signal);
+    if (!res) unanswered = true;
+    if (!res?.ok) continue;
     const hits = ((await res.json()) as LrclibHit[]).filter((h) => h.syncedLyrics || h.plainLyrics || h.instrumental);
     // The studio version for live takes; otherwise the closest duration, synced first.
     const scored = hits
@@ -189,9 +237,14 @@ async function fetchLrclib(track: Track, signal: AbortSignal): Promise<Cached | 
     const best = scored[0];
     if (!best) continue;
     const close = !track.duration || !best.duration || Math.abs(best.duration - track.duration) < slack;
+    if (q.has('q') && byNameOnly.includes(q.get('q') ?? '')) {
+      // No artist to go by: the length has to agree closely.
+      if (track.duration && best.duration && Math.abs(best.duration - track.duration) < 4) return pick(best, true);
+      continue;
+    }
     if (close || live) return pick(best, true);
   }
-  return { at: Date.now() };
+  return unanswered ? null : { at: Date.now() };
 }
 
 /** "[00:12.34] words" → "words". */
@@ -232,8 +285,16 @@ export async function loadLyrics(track: Track, signal: AbortSignal): Promise<Lyr
 
   if (!useSettings.getState().onlineLyrics) return { kind: 'none' };
   try {
-    const fetched = await fetchLrclib(track, signal);
-    if (!fetched) return cached ? toLyrics(cached, track.duration) : { kind: 'none' };
+    let fetched = await fetchLrclib(track, signal);
+    if (signal.aborted) return { kind: 'none', failed: true };
+    // Not there, or LRCLIB did not answer: YouTube Music may have the words.
+    if (!fetched || !(fetched.synced || fetched.plain || fetched.instrumental)) {
+      const words = await songLyrics(track.source === 'youtube' ? track.uri.slice(3) : undefined, track, signal).catch(
+        () => undefined,
+      );
+      if (words) fetched = { at: Date.now(), plain: words, source: 'youtube' };
+    }
+    if (!fetched) return cached ? toLyrics(cached, track.duration) : { kind: 'none', failed: true };
     try {
       if (!file.exists) file.create({ overwrite: true });
       file.write(JSON.stringify(fetched));
@@ -242,6 +303,6 @@ export async function loadLyrics(track: Track, signal: AbortSignal): Promise<Lyr
     }
     return done(toLyrics(fetched, track.duration));
   } catch {
-    return { kind: 'none' }; // offline or aborted
+    return { kind: 'none', failed: true }; // offline or aborted
   }
 }
